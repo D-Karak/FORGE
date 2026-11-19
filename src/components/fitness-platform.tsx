@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import AuthForm, { SessionControl } from "@/components/auth-form";
 
 type Trainer = {
   id: string;
@@ -321,7 +322,7 @@ function PublicHeader({ onSignIn }: { onSignIn: () => void }) {
         <Link href="/#how-it-works">How it works</Link>
       </nav>
       <div className="header-actions">
-        <button className="header-login" onClick={onSignIn}>Log in</button>
+        <SessionControl onSignIn={onSignIn} />
         <Link className="button button-red button-small" href="/discover">Get started <Icon name="arrow" size={14} /></Link>
       </div>
     </header>
@@ -818,6 +819,7 @@ function DashboardShell({
         <div className="sidebar-grow" />
         {trainerMode && <Link className="sidebar-action" href="/admin"><Icon name="settings" size={16} /> Admin preview</Link>}
         <Link className="sidebar-action" href="/"><Icon name="arrow" size={16} /> Back to marketplace</Link>
+        <SessionControl className="sidebar-action" />
         <Link href="/settings" className="sidebar-profile">
           <Avatar trainer={trainerMode ? trainers[0] : trainers[1]} size="sm" />
           <span><b>{trainerMode ? "Arjun Mehta" : "Riya Sharma"}</b><small>Account settings</small></span>
@@ -954,12 +956,6 @@ export default function FitnessPlatform() {
       sessionTitle: "1:1 Strength coaching",
       scheduledTime: "THURSDAY, NOV 21 · 5:30 PM IST",
     });
-  }
-
-  function startDemoSignIn(provider: string) {
-    setDialog(null);
-    notify(`${provider} sign-in preview · ${accountRole} account`);
-    router.push(accountRole === "trainer" ? "/trainer/dashboard" : "/dashboard");
   }
 
   const isPublicProfile = pathname.startsWith("/trainers/");
@@ -1102,7 +1098,7 @@ export default function FitnessPlatform() {
           )}
 
           {isTrainerApplication && <TrainerApplicationPage notify={notify} />}
-          {pathname === "/login" && <div className="login-page"><p className="eyebrow"><span /> YOUR NEXT CHAPTER</p><h1>GOOD TO HAVE<br /><em>YOU HERE.</em></h1><p>Sign in or create an account to find your people and keep your progress moving.</p><AccountTypePicker value={accountRole} onChange={setAccountRole} /><button onClick={() => startDemoSignIn("Google")} className="button button-outline button-full">Continue with Google</button><button onClick={() => startDemoSignIn("Apple")} className="button button-outline button-full">Continue with Apple</button><small>By continuing, you agree to our Terms and Privacy Policy.</small></div>}
+          {pathname === "/login" && <div className="login-page"><p className="eyebrow"><span /> YOUR NEXT CHAPTER</p><h1>GOOD TO HAVE<br /><em>YOU HERE.</em></h1><p>Sign in or create an account to find your people and keep your progress moving.</p><AccountTypePicker value={accountRole} onChange={setAccountRole} /><AuthForm role={accountRole} onAuthenticated={(role) => router.push(role === "trainer" ? "/trainer/dashboard" : "/dashboard")} /><small>By continuing, you agree to our Terms and Privacy Policy.</small></div>}
         </main>
       )}
 
@@ -1125,7 +1121,7 @@ export default function FitnessPlatform() {
       {playerRequest && <VideoLessonPlayer program={programs.find((program) => program.id === playerRequest.programId) ?? programs[0]} initialLessonIndex={playerRequest.lessonIndex} preview={playerRequest.preview} onClose={() => setPlayerRequest(null)} />}
       {callRequest && <CoachingCallModal request={callRequest} onClose={() => setCallRequest(null)} notify={notify} />}
 
-      {dialog === "signin" && <Modal title="Sign in to Forge" onClose={() => setDialog(null)}><div className="auth-modal"><Brand inverse /><p className="eyebrow"><span /> YOUR TRAINING, YOUR TERMS</p><h2>LET’S GET<br /><em>STARTED.</em></h2><p>Sign in or create an account. Your next step is closer than you think.</p><AccountTypePicker value={accountRole} onChange={setAccountRole} /><button onClick={() => startDemoSignIn("Google")} className="social-button"><b>G</b> Continue with Google</button><button onClick={() => startDemoSignIn("Apple")} className="social-button"><b>●</b> Continue with Apple</button><small>By continuing, you agree to our Terms and Privacy Policy.</small></div></Modal>}
+      {dialog === "signin" && <Modal title="Sign in to Forge" onClose={() => setDialog(null)}><div className="auth-modal"><Brand inverse /><p className="eyebrow"><span /> YOUR TRAINING, YOUR TERMS</p><h2>LET’S GET<br /><em>STARTED.</em></h2><p>Sign in or create an account. Your next step is closer than you think.</p><AccountTypePicker value={accountRole} onChange={setAccountRole} /><AuthForm role={accountRole} onAuthenticated={(role) => { setDialog(null); router.push(role === "trainer" ? "/trainer/dashboard" : "/dashboard"); }} /><small>By continuing, you agree to our Terms and Privacy Policy.</small></div></Modal>}
       {dialog === "booking" && (
         <Modal title="Book a coaching session" onClose={() => setDialog(null)} wide>
           <div className="booking-modal">

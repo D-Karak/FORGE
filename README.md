@@ -1,4 +1,23 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+This is Forge, a Next.js App Router coaching marketplace backed by Neon.
+
+## Neon authentication and profiles
+
+The app uses Neon Managed Auth for email/password and Google sign-in. Auth requests are proxied through `/api/auth`, while protected routes redirect signed-out visitors to `/login`. Account role profiles are stored in Postgres.
+
+After `neon deploy` has populated `.env.local`, apply the checked-in profile migration with:
+
+```bash
+npm run db:migrate
+```
+
+Set `NEON_AUTH_COOKIE_SECRET` in `.env.local` (and in the hosting environment) to a fresh secret of at least 32 characters. Generate one locally with:
+
+```bash
+node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
+```
+
+Google sign-in on production requires a Google OAuth client configured for the Neon Auth branch in the Neon Console. Apple sign-in is deferred.
+Set a server-only `ADMIN_EMAILS` comma-separated allowlist before granting access to the admin preview.
 
 ## Getting Started
 
