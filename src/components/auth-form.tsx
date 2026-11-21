@@ -7,10 +7,10 @@ import { useEffect, useState, type FormEvent } from "react";
 
 type Props = {
   role: AccountRole;
-  onAuthenticated: (role: AccountRole) => void;
+  onAuthenticated: (role: AccountRole, trainerSetupRequired: boolean) => void;
 };
 
-async function saveProfile(role: AccountRole): Promise<AccountRole> {
+async function saveProfile(role: AccountRole): Promise<{ role: AccountRole; trainerSetupRequired: boolean }> {
   const response = await fetch("/api/profile", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -19,6 +19,7 @@ async function saveProfile(role: AccountRole): Promise<AccountRole> {
   const result = await response.json() as {
     error?: unknown;
     profile?: { role?: unknown };
+    trainerSetupRequired?: unknown;
   };
 
   if (!response.ok) {
@@ -33,16 +34,63 @@ async function saveProfile(role: AccountRole): Promise<AccountRole> {
     throw new Error("The server returned an invalid account profile.");
   }
 
-  return result.profile.role;
+  if (result.profile.role !== role) {
+    throw new Error(
+      `This email is already set up as a ${result.profile.role}. Switch accounts to continue with a separate ${role} account.`,
+    );
+  }
+
+  if (typeof result.trainerSetupRequired !== "boolean") {
+    throw new Error("The server returned an invalid coach setup status.");
+  }
+
+  return { role: result.profile.role, trainerSetupRequired: result.trainerSetupRequired };
 }
 
 export default function AuthForm({ role, onAuthenticated }: Props) {
   const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [accountEmail, setAccountEmail] = useState("");
   const [password, setPassword] = useState("");
   const [pending, setPending] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
+
+  useEffect(() => {
+    let active = true;
+
+    authClient.getSession()
+      .then(({ data, error }) => {
+        if (!active) return;
+        if (error) {
+          setErrorMessage(error.message ?? "Could not load your session.");
+          return;
+        }
+
+        setAccountEmail(data?.user?.email ?? "");
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setErrorMessage(error instanceof Error ? error.message : "Could not load your session.");
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function switchAccount() {
+    setErrorMessage("");
+    try {
+      const { error } = await authClient.signOut();
+      if (error) throw new Error(error.message);
+      setAccountEmail("");
+      setEmail("");
+      setPassword("");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not switch accounts.");
+    }
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -50,6 +98,12 @@ export default function AuthForm({ role, onAuthenticated }: Props) {
     setErrorMessage("");
 
     try {
+      if (accountEmail && (
+        mode === "sign-up" || accountEmail.toLowerCase() !== email.trim().toLowerCase()
+      )) {
+        throw new Error(`You're signed in as ${accountEmail}. Switch accounts before using different credentials.`);
+      }
+
       const result = mode === "sign-up"
         ? await authClient.signUp.email({ name: name.trim(), email: email.trim(), password })
         : await authClient.signIn.email({ email: email.trim(), password });
@@ -58,7 +112,9 @@ export default function AuthForm({ role, onAuthenticated }: Props) {
         throw new Error(result.error.message);
       }
 
-      onAuthenticated(await saveProfile(role));
+      const profile = await saveProfile(role);
+      setAccountEmail(email.trim());
+      onAuthenticated(profile.role, profile.trainerSetupRequired);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Authentication failed. Try again.");
     } finally {
@@ -71,6 +127,10 @@ export default function AuthForm({ role, onAuthenticated }: Props) {
     setErrorMessage("");
 
     try {
+      if (accountEmail) {
+        throw new Error(`You're signed in as ${accountEmail}. Switch accounts before continuing with Google.`);
+      }
+
       const callbackURL = new URL("/auth/callback", window.location.origin);
       callbackURL.searchParams.set("role", role);
       const result = await authClient.signIn.social({
@@ -89,6 +149,12 @@ export default function AuthForm({ role, onAuthenticated }: Props) {
 
   return (
     <div className="auth-form">
+      {accountEmail && (
+        <div className="signed-in-notice">
+          <span>Currently signed in as <b>{accountEmail}</b></span>
+          <button disabled={pending} onClick={switchAccount} type="button">Switch account</button>
+        </div>
+      )}
       <form onSubmit={submit}>
         {mode === "sign-up" && (
           <label>
@@ -148,12 +214,16 @@ export default function AuthForm({ role, onAuthenticated }: Props) {
 export function SessionControl({
   onSignIn,
   className = "header-login",
+  showDashboard = true,
 }: {
   onSignIn?: () => void;
   className?: string;
+  showDashboard?: boolean;
 }) {
   const router = useRouter();
   const [authenticated, setAuthenticated] = useState(false);
+  const [accountRole, setAccountRole] = useState<AccountRole | null>(null);
+  const [trainerSetupRequired, setTrainerSetupRequired] = useState(false);
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
 
@@ -161,13 +231,36 @@ export function SessionControl({
     let active = true;
 
     authClient.getSession()
-      .then(({ data, error }) => {
+      .then(async ({ data, error }) => {
         if (!active) return;
         if (error) {
-          setErrorMessage(error.message ?? "Could not load your session.");
-        } else {
-          setAuthenticated(Boolean(data?.user));
+          throw new Error(error.message ?? "Could not load your session.");
         }
+        if (!data?.user) {
+          setLoading(false);
+          return;
+        }
+
+        const response = await fetch("/api/profile");
+        const result = await response.json() as {
+          error?: unknown;
+          profile?: { role?: unknown };
+          trainerSetupRequired?: unknown;
+        };
+        if (!response.ok) {
+          throw new Error(typeof result.error === "string" ? result.error : "Could not load your account.");
+        }
+        if (result.profile?.role !== "client" && result.profile?.role !== "trainer") {
+          throw new Error("The server returned an invalid account profile.");
+        }
+        if (typeof result.trainerSetupRequired !== "boolean") {
+          throw new Error("The server returned an invalid coach setup status.");
+        }
+        if (!active) return;
+
+        setAccountRole(result.profile.role);
+        setTrainerSetupRequired(result.trainerSetupRequired);
+        setAuthenticated(true);
         setLoading(false);
       })
       .catch((error: unknown) => {
@@ -190,7 +283,9 @@ export function SessionControl({
       }
 
       setAuthenticated(false);
-      router.replace("/");
+      setAccountRole(null);
+      setTrainerSetupRequired(false);
+      router.replace("/login");
       router.refresh();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Could not sign out.");
@@ -202,7 +297,22 @@ export function SessionControl({
       {loading ? (
         <span className={className} aria-live="polite">Checking session…</span>
       ) : authenticated ? (
-        <button className={className} onClick={signOut} type="button">Log out</button>
+        <>
+          {showDashboard && accountRole && (
+            <button
+              className={className === "header-login" ? "header-login header-dashboard" : className}
+              onClick={() => router.push(
+                accountRole === "trainer"
+                  ? trainerSetupRequired ? "/trainer/apply" : "/trainer/dashboard"
+                  : "/dashboard",
+              )}
+              type="button"
+            >
+              {accountRole === "trainer" && trainerSetupRequired ? "Coach application" : "Dashboard"}
+            </button>
+          )}
+          <button className={className} onClick={signOut} type="button">Switch account</button>
+        </>
       ) : (
         <button className={className} onClick={onSignIn ?? (() => router.push("/login"))} type="button">Log in</button>
       )}

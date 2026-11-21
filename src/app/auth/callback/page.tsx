@@ -1,5 +1,5 @@
 import { auth } from "@/lib/auth/server";
-import { getOrCreateProfile } from "@/lib/profiles";
+import { getOrCreateProfile, needsTrainerSetup } from "@/lib/profiles";
 import { redirect } from "next/navigation";
 import { connection } from "next/server";
 
@@ -26,6 +26,10 @@ export default async function AuthCallback({
     session.user,
     role === "trainer" ? "trainer" : "client",
   );
+
+  if (profile.role === "trainer" && await needsTrainerSetup(session.user.id)) {
+    redirect("/trainer/apply");
+  }
 
   redirect(profile.role === "trainer" ? "/trainer/dashboard" : "/dashboard");
 }

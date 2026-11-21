@@ -36,9 +36,9 @@ a { color: inherit; text-decoration: none; }
 .public-header { position: absolute; z-index: 20; top: 0; left: 0; display: flex; width: 100%; height: 82px; align-items: center; justify-content: space-between; padding: 0 6.2%; border-bottom: 1px solid rgba(255,255,255,.1); background: rgba(10,10,10,.27); backdrop-filter: blur(12px); }
 .public-header .brand { min-width: 150px; }
 .public-nav { display: flex; align-items: center; gap: clamp(24px, 4vw, 58px); margin-left: auto; margin-right: auto; }
-.public-nav a, .header-login { position: relative; border: 0; color: rgba(255,255,255,.72); background: transparent; cursor: pointer; font-size: 10px; font-weight: 700; letter-spacing: 1.15px; text-transform: uppercase; transition: color .2s ease; }
+.public-nav a, .header-login, .header-dashboard { position: relative; border: 0; color: rgba(255,255,255,.72); background: transparent; cursor: pointer; font-size: 10px; font-weight: 700; letter-spacing: 1.15px; text-transform: uppercase; transition: color .2s ease; }
 .public-nav a::after { position: absolute; right: 0; bottom: -9px; left: 0; height: 1px; background: var(--red); content: ""; transform: scaleX(0); transform-origin: left; transition: transform .2s ease; }
-.public-nav a:hover, .public-nav a.nav-active, .header-login:hover { color: white; }
+.public-nav a:hover, .public-nav a.nav-active, .header-login:hover, .header-dashboard:hover { color: white; }
 .public-nav a:hover::after, .public-nav a.nav-active::after { transform: scaleX(1); }
 .header-actions { display: flex; align-items: center; gap: 25px; }
 .button { display: inline-flex; min-height: 48px; align-items: center; justify-content: center; gap: 16px; padding: 0 21px; border: 1px solid transparent; cursor: pointer; font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; transition: transform .2s ease, background .2s ease, border-color .2s ease, color .2s ease; }
@@ -300,6 +300,9 @@ a { color: inherit; text-decoration: none; }
 .auth-form .social-button { margin-top: 0; }
 .auth-form button:disabled { cursor: wait; opacity: .58; }
 .auth-error { margin: 0; color: #ff8873; font-size: 10px; line-height: 1.5; }
+.signed-in-notice { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 12px; border: 1px solid #3c302b; color: #aaa39d; background: #191513; font-size: 9px; }
+.signed-in-notice b { color: white; }
+.signed-in-notice button { flex: 0 0 auto; padding: 6px 0; border: 0; color: #ff765f; background: transparent; cursor: pointer; font-size: 9px; font-weight: 700; }
 .auth-mode-toggle { justify-self: center; padding: 7px; border: 0; color: #b7b0aa; background: transparent; cursor: pointer; font-size: 9px; }
 .auth-mode-toggle:hover { color: white; }
 .session-control { display: grid; justify-items: start; gap: 5px; }
@@ -336,6 +339,9 @@ a { color: inherit; text-decoration: none; }
 .credential-confirm input { accent-color: var(--red); }
 .application-form .button { min-height: 42px; font-size: 8px; }
 .application-form > small { color: #777; font-size: 7px; line-height: 1.6; text-align: center; }
+.application-form .application-help, .application-status > p:not(.eyebrow) { margin: 0; color: #aaa; font-size: 10px; line-height: 1.8; }
+.application-form .application-feedback { margin: 0; color: #ff8873; font-size: 9px; line-height: 1.6; }
+.application-form .auth-form { margin-top: 0; }
 
 /* Member, trainer, and admin workspaces */
 .app-layout { min-height: 100vh; background: #0d0d0d; }
@@ -1186,6 +1192,7 @@ a { color: inherit; text-decoration: none; }
 @media (max-width: 380px) {
   .header-actions { gap: 8px; }
   .header-login { display: none; }
+.header-dashboard { display: inline-flex; font-size: 8px; }
   .hero-stat-one { left: 16px; }
   .hero-stat-two { right: 16px; }
   .hero-stat { width: 126px; }

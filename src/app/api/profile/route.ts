@@ -1,5 +1,5 @@
 import { auth } from "@/lib/auth/server";
-import { getOrCreateProfile, getProfile, type AccountRole } from "@/lib/profiles";
+import { getOrCreateProfile, getProfile, needsTrainerSetup, type AccountRole } from "@/lib/profiles";
 
 function isAccountRole(value: unknown): value is AccountRole {
   return value === "client" || value === "trainer";
@@ -23,7 +23,11 @@ export async function GET() {
     return Response.json({ error: "Account profile not found." }, { status: 404 });
   }
 
-  return Response.json({ profile });
+  const trainerSetupRequired = profile.role === "trainer"
+    ? await needsTrainerSetup(session.user.id)
+    : false;
+
+  return Response.json({ profile, trainerSetupRequired });
 }
 
 export async function POST(request: Request) {
@@ -44,5 +48,9 @@ export async function POST(request: Request) {
   }
 
   const profile = await getOrCreateProfile(session.user, body.role);
-  return Response.json({ profile });
+  const trainerSetupRequired = profile.role === "trainer"
+    ? await needsTrainerSetup(session.user.id)
+    : false;
+
+  return Response.json({ profile, trainerSetupRequired });
 }

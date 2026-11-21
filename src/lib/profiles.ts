@@ -51,3 +51,26 @@ export async function getOrCreateProfile(
 
   return created;
 }
+
+export async function needsTrainerSetup(userId: string): Promise<boolean> {
+  const [trainer] = await sql`
+    SELECT id
+    FROM public.trainer_profiles
+    WHERE user_id = ${userId}
+    LIMIT 1
+  `;
+
+  if (trainer) {
+    return false;
+  }
+
+  const [application] = await sql`
+    SELECT status
+    FROM public.trainer_applications
+    WHERE user_id = ${userId}
+    ORDER BY submitted_at DESC
+    LIMIT 1
+  `;
+
+  return application?.status !== "approved";
+}

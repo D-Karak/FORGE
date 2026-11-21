@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import AuthForm, { SessionControl } from "@/components/auth-form";
 import LiveBookings from "@/components/live-bookings";
+import { authClient } from "@/lib/auth/client";
 
 type Trainer = {
   id: string;
@@ -839,7 +840,7 @@ function DashboardShell({
         <div className="sidebar-grow" />
         {trainerMode && <Link className="sidebar-action" href="/admin"><Icon name="settings" size={16} /> Admin preview</Link>}
         <Link className="sidebar-action" href="/"><Icon name="arrow" size={16} /> Back to marketplace</Link>
-        <SessionControl className="sidebar-action" />
+        <SessionControl className="sidebar-action" showDashboard={false} />
         <Link href="/settings" className="sidebar-profile">
           <Avatar trainer={trainerMode ? trainers[0] : trainers[1]} size="sm" />
           <span><b>{trainerMode ? "Arjun Mehta" : "Riya Sharma"}</b><small>Account settings</small></span>
@@ -1151,7 +1152,7 @@ export default function FitnessPlatform() {
           )}
 
           {isTrainerApplication && <TrainerApplicationPage notify={notify} />}
-          {pathname === "/login" && <div className="login-page"><p className="eyebrow"><span /> YOUR NEXT CHAPTER</p><h1>GOOD TO HAVE<br /><em>YOU HERE.</em></h1><p>Sign in or create an account to find your people and keep your progress moving.</p><AccountTypePicker value={accountRole} onChange={setAccountRole} /><AuthForm role={accountRole} onAuthenticated={(role) => router.push(role === "trainer" ? "/trainer/dashboard" : "/dashboard")} /><small>By continuing, you agree to our Terms and Privacy Policy.</small></div>}
+          {pathname === "/login" && <div className="login-page"><p className="eyebrow"><span /> YOUR NEXT CHAPTER</p><h1>GOOD TO HAVE<br /><em>YOU HERE.</em></h1><p>Sign in or create an account to find your people and keep your progress moving.</p><AccountTypePicker value={accountRole} onChange={setAccountRole} /><AuthForm role={accountRole} onAuthenticated={(role, needsSetup) => router.push(role === "trainer" ? needsSetup ? "/trainer/apply" : "/trainer/dashboard" : "/dashboard")} /><small>By continuing, you agree to our Terms and Privacy Policy.</small></div>}
         </main>
       )}
 
@@ -1174,7 +1175,7 @@ export default function FitnessPlatform() {
       {playerRequest && <VideoLessonPlayer program={programs.find((program) => program.id === playerRequest.programId) ?? programs[0]} initialLessonIndex={playerRequest.lessonIndex} preview={playerRequest.preview} onClose={() => setPlayerRequest(null)} />}
       {callRequest && <CoachingCallModal request={callRequest} onClose={() => setCallRequest(null)} notify={notify} />}
 
-      {dialog === "signin" && <Modal title="Sign in to Forge" onClose={() => setDialog(null)}><div className="auth-modal"><Brand inverse /><p className="eyebrow"><span /> YOUR TRAINING, YOUR TERMS</p><h2>LET’S GET<br /><em>STARTED.</em></h2><p>Sign in or create an account. Your next step is closer than you think.</p><AccountTypePicker value={accountRole} onChange={setAccountRole} /><AuthForm role={accountRole} onAuthenticated={(role) => { setDialog(null); router.push(role === "trainer" ? "/trainer/dashboard" : "/dashboard"); }} /><small>By continuing, you agree to our Terms and Privacy Policy.</small></div></Modal>}
+      {dialog === "signin" && <Modal title="Sign in to Forge" onClose={() => setDialog(null)}><div className="auth-modal"><Brand inverse /><p className="eyebrow"><span /> YOUR TRAINING, YOUR TERMS</p><h2>LET’S GET<br /><em>STARTED.</em></h2><p>Sign in or create an account. Your next step is closer than you think.</p><AccountTypePicker value={accountRole} onChange={setAccountRole} /><AuthForm role={accountRole} onAuthenticated={(role, needsSetup) => { setDialog(null); router.push(role === "trainer" ? needsSetup ? "/trainer/apply" : "/trainer/dashboard" : "/dashboard"); }} /><small>By continuing, you agree to our Terms and Privacy Policy.</small></div></Modal>}
       {dialog === "booking" && (
         <Modal title="Book a coaching session" onClose={() => setDialog(null)} wide>
           <div className="booking-modal">
@@ -1233,10 +1234,72 @@ function DashboardHeading({ kicker, title, subtitle, action }: { kicker: string;
 }
 
 function TrainerApplicationPage({ notify }: { notify: (message: string) => void }) {
+  const router = useRouter();
+  const [pageState, setPageState] = useState<"checking" | "signed-out" | "client-account" | "new" | "pending" | "error">("checking");
+  const [pageMessage, setPageMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+
+    fetch("/api/trainer-applications")
+      .then(async (response) => {
+        if (response.status === 401) {
+          if (active) setPageState("signed-out");
+          return;
+        }
+
+        const result = await response.json() as {
+          error?: string;
+          profileRole?: string | null;
+          applications?: Array<{ status?: string }>;
+        };
+        if (!response.ok) {
+          throw new Error(result.error ?? "Could not load your coach application.");
+        }
+
+        const latestStatus = result.applications?.[0]?.status;
+        if (!active) return;
+        if (result.profileRole === "client") {
+          setPageState("client-account");
+        } else if (latestStatus === "pending") {
+          setPageState("pending");
+        } else if (latestStatus === "approved") {
+          router.replace("/trainer/dashboard");
+        } else {
+          setPageState("new");
+        }
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setPageState("error");
+        setPageMessage(error instanceof Error ? error.message : "Could not load your coach application.");
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [refreshKey, router]);
+
+  async function switchToCoachAccount() {
+    setPageMessage("");
+    try {
+      const { error } = await authClient.signOut();
+      if (error) throw new Error(error.message);
+      setPageState("signed-out");
+    } catch (error) {
+      setPageMessage(error instanceof Error ? error.message : "Could not switch accounts.");
+    }
+  }
+
   async function submitApplication(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     const data = Object.fromEntries(form.entries());
+    setSubmitting(true);
+    setPageMessage("");
 
     try {
       const response = await fetch("/api/trainer-applications", {
@@ -1248,14 +1311,19 @@ function TrainerApplicationPage({ notify }: { notify: (message: string) => void 
           specialty: data.specialty,
           languages: data.languages,
           approach: data.approach,
+          badges: data.badges,
+          sessionPrice: Number(data.sessionPrice),
         }),
       });
       const result = await response.json() as { error?: string };
       if (!response.ok) throw new Error(result.error ?? "Could not submit the application.");
+      formElement.reset();
+      setPageState("pending");
       notify("Coach application submitted for review");
-      event.currentTarget.reset();
     } catch (error) {
-      notify(error instanceof Error ? error.message : "Could not submit the application.");
+      setPageMessage(error instanceof Error ? error.message : "Could not submit the application.");
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -1267,17 +1335,59 @@ function TrainerApplicationPage({ notify }: { notify: (message: string) => void 
         <p>Bring your coaching to a community that believes progress should feel personal. Tell us a little about how you coach.</p>
         <div className="application-points"><span><Icon name="check" size={15} /> Your own coach profile</span><span><Icon name="check" size={15} /> Programs you create and price</span><span><Icon name="check" size={15} /> Clients who choose your approach</span></div>
       </div>
-      <form className="application-form" onSubmit={submitApplication}>
-        <p className="eyebrow"><span /> COACH APPLICATION · 01 / 01</p>
-        <h2>LET’S GET TO<br /><em>KNOW YOU.</em></h2>
-        <div className="editor-row"><label>Your name<input name="name" required placeholder="e.g. Arjun Mehta" /></label><label>City, state<input name="city" required placeholder="e.g. Mumbai, Maharashtra" /></label></div>
-        <label>What do you coach?<select name="specialty" defaultValue="" required><option value="" disabled>Choose your main specialty</option><option>Strength & conditioning</option><option>Mobility & movement</option><option>Running & endurance</option><option>Nutrition & habits</option></select></label>
-        <label>Languages you coach in<input name="languages" required placeholder="English, Hindi, ..." /></label>
-        <label>Your coaching approach<textarea name="approach" required rows={4} placeholder="What can clients expect when they work with you?" /></label>
-        <label className="credential-confirm"><input type="checkbox" required /><span>I confirm my profile information is accurate and I’m ready to coach clients online.</span></label>
-        <button className="button button-red button-full" type="submit">SUBMIT FOR REVIEW <Icon name="arrow" size={15} /></button>
-        <small>We review each coach profile before it becomes public.</small>
-      </form>
+      {pageState === "checking" && <div className="application-form" aria-live="polite">Checking your coach account…</div>}
+      {pageState === "client-account" && (
+        <section className="application-form application-status">
+          <p className="eyebrow"><span /> CLIENT ACCOUNT ACTIVE</p>
+          <h2>USE YOUR<br /><em>COACH LOGIN.</em></h2>
+          <p>You’re signed in with a client account. To keep your coaching profile separate, switch accounts and sign in or create a coach account with its own credentials.</p>
+          {pageMessage && <p className="application-feedback" role="alert">{pageMessage}</p>}
+          <button className="button button-red button-full" onClick={switchToCoachAccount} type="button">SWITCH TO A COACH ACCOUNT <Icon name="arrow" size={15} /></button>
+        </section>
+      )}
+      {pageState === "signed-out" && (
+        <div className="application-form">
+          <p className="eyebrow"><span /> YOUR COACH ACCOUNT</p>
+          <h2>FIRST, LET’S<br /><em>GET YOU IN.</em></h2>
+          <p className="application-help">Create or sign in to a dedicated coach account. Once you’re in, you can build your profile here.</p>
+          <AuthForm
+            role="trainer"
+            onAuthenticated={(role, needsSetup) => {
+              if (role === "trainer" && needsSetup) setRefreshKey((current) => current + 1);
+              else if (role === "trainer") router.replace("/trainer/dashboard");
+            }}
+          />
+        </div>
+      )}
+      {pageState === "pending" && (
+        <section className="application-form application-status" role="status">
+          <p className="eyebrow"><span /> APPLICATION RECEIVED</p>
+          <h2>YOU’RE ON<br /><em>OUR RADAR.</em></h2>
+          <p>Your coach profile is being reviewed. We’ll let you know when it’s ready to meet clients.</p>
+        </section>
+      )}
+      {pageState === "error" && (
+        <section className="application-form" role="alert">
+          <p>{pageMessage}</p>
+          <button className="button button-outline" onClick={() => setRefreshKey((current) => current + 1)} type="button">TRY AGAIN</button>
+        </section>
+      )}
+      {pageState === "new" && (
+        <form className="application-form" onSubmit={submitApplication}>
+          <p className="eyebrow"><span /> COACH PROFILE · 01 / 01</p>
+          <h2>LET’S GET TO<br /><em>KNOW YOU.</em></h2>
+          <div className="editor-row"><label>Your name<input autoComplete="name" name="name" required placeholder="e.g. Arjun Mehta" /></label><label>City, state<input autoComplete="address-level2" name="city" required placeholder="e.g. Mumbai, Maharashtra" /></label></div>
+          <label>Your expertise<select name="specialty" defaultValue="" required><option value="" disabled>Choose your main expertise</option><option>Strength & conditioning</option><option>Mobility & movement</option><option>Running & endurance</option><option>Nutrition & habits</option></select></label>
+          <label>Languages you coach in<input name="languages" required placeholder="English, Hindi, ..." /></label>
+          <label>Certifications & badges<input name="badges" placeholder="e.g. ACE-CPT, Precision Nutrition" /></label>
+          <label>Charge per 50-minute session (₹)<input name="sessionPrice" type="number" min="1" max="100000" required defaultValue="1500" /></label>
+          <label>Your coaching approach<textarea name="approach" required rows={4} placeholder="What can clients expect when they work with you?" /></label>
+          {pageMessage && <p className="application-feedback" role="alert">{pageMessage}</p>}
+          <label className="credential-confirm"><input type="checkbox" required /><span>I confirm my profile information is accurate and I’m ready to coach clients online.</span></label>
+          <button className="button button-red button-full" disabled={submitting} type="submit">{submitting ? "SUBMITTING…" : "SUBMIT FOR REVIEW"} <Icon name="arrow" size={15} /></button>
+          <small>Your profile goes public after our team reviews it.</small>
+        </form>
+      )}
     </div>
   );
 }

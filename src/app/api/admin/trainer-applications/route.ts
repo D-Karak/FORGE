@@ -16,7 +16,7 @@ export async function GET() {
   }
 
   const applications = await sql`
-    SELECT id, user_id, name, city, specialty, languages, approach, status, submitted_at
+    SELECT id, user_id, name, city, specialty, languages, approach, badges, session_price, status, submitted_at
     FROM public.trainer_applications
     ORDER BY submitted_at DESC
   `;
@@ -39,7 +39,7 @@ export async function POST(request: Request) {
   }
 
   const [application] = await sql`
-    SELECT id, user_id, name, city, specialty, languages, approach
+    SELECT id, user_id, name, city, specialty, languages, approach, badges, session_price
     FROM public.trainer_applications
     WHERE id = ${body.applicationId}
     LIMIT 1
@@ -60,16 +60,24 @@ export async function POST(request: Request) {
     const slug = application.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
     await sql`
       INSERT INTO public.trainer_profiles
-        (id, user_id, slug, name, title, city, specialty, bio, languages, session_price, approved)
+        (id, user_id, slug, name, title, city, specialty, bio, languages, session_price, badges, approved)
       VALUES
         (${application.id}, ${application.user_id}, ${slug},
          ${application.name}, ${application.specialty}, ${application.city},
          ${application.specialty},
          ${application.approach},
          ${application.languages.split(",").map((value: string) => value.trim()).filter(Boolean)},
-         1500, true)
+         ${application.session_price}, ${application.badges}, true)
       ON CONFLICT (id) DO UPDATE SET
         user_id = EXCLUDED.user_id,
+        name = EXCLUDED.name,
+        title = EXCLUDED.title,
+        city = EXCLUDED.city,
+        specialty = EXCLUDED.specialty,
+        bio = EXCLUDED.bio,
+        languages = EXCLUDED.languages,
+        session_price = EXCLUDED.session_price,
+        badges = EXCLUDED.badges,
         approved = true
     `;
 

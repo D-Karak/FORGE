@@ -1,5 +1,6 @@
 import { auth } from "@/lib/auth/server";
 import { sql } from "@/lib/db";
+import { getProfile } from "@/lib/profiles";
 import { randomUUID } from "node:crypto";
 
 export async function GET() {
@@ -9,13 +10,14 @@ export async function GET() {
   }
 
   const applications = await sql`
-    SELECT id, name, city, specialty, languages, approach, status, submitted_at
+    SELECT id, name, city, specialty, languages, approach, badges, session_price, status, submitted_at
     FROM public.trainer_applications
     WHERE user_id = ${session.user.id}
     ORDER BY submitted_at DESC
   `;
 
-  return Response.json({ applications });
+  const profile = await getProfile(session.user.id);
+  return Response.json({ applications, profileRole: profile?.role ?? null });
 }
 
 export async function POST(request: Request) {
@@ -28,21 +30,57 @@ export async function POST(request: Request) {
   }
 
   const body = await request.json().catch(() => null) as
-    | { name?: unknown; city?: unknown; specialty?: unknown; languages?: unknown; approach?: unknown }
+    | {
+        name?: unknown;
+        city?: unknown;
+        specialty?: unknown;
+        languages?: unknown;
+        approach?: unknown;
+        badges?: unknown;
+        sessionPrice?: unknown;
+      }
     | null;
 
-  const fields = body ? [body.name, body.city, body.specialty, body.languages, body.approach] : [];
-  if (!body || fields.some((value) => typeof value !== "string" || value.trim().length < 2)) {
+  if (
+    !body ||
+    typeof body.name !== "string" || body.name.trim().length < 2 ||
+    typeof body.city !== "string" || body.city.trim().length < 2 ||
+    typeof body.specialty !== "string" || body.specialty.trim().length < 2 ||
+    typeof body.languages !== "string" || body.languages.trim().length < 2 ||
+    typeof body.approach !== "string" || body.approach.trim().length < 2
+  ) {
     return Response.json({ error: "Complete every application field." }, { status: 400 });
   }
 
+  if (
+    typeof body.badges !== "string" ||
+    typeof body.sessionPrice !== "number" ||
+    !Number.isInteger(body.sessionPrice) ||
+    body.sessionPrice < 1 ||
+    body.sessionPrice > 100000
+  ) {
+    return Response.json({ error: "Enter valid credentials and a session charge between ₹1 and ₹100,000." }, { status: 400 });
+  }
+
+  const [existingApplication] = await sql`
+    SELECT id
+    FROM public.trainer_applications
+    WHERE user_id = ${session.user.id} AND status = 'pending'
+    LIMIT 1
+  `;
+  if (existingApplication) {
+    return Response.json({ error: "Your coach application is already being reviewed." }, { status: 409 });
+  }
+
+  const badges = body.badges.split(/[,\n]/).map((value) => value.trim()).filter(Boolean);
   const id = randomUUID();
   await sql`
     INSERT INTO public.trainer_applications
-      (id, user_id, name, city, specialty, languages, approach)
+      (id, user_id, name, city, specialty, languages, approach, badges, session_price)
     VALUES
-      (${id}, ${session.user.id}, ${body.name as string}, ${body.city as string},
-       ${body.specialty as string}, ${body.languages as string}, ${body.approach as string})
+      (${id}, ${session.user.id}, ${body.name.trim()}, ${body.city.trim()},
+       ${body.specialty.trim()}, ${body.languages.trim()}, ${body.approach.trim()},
+       ${badges}, ${body.sessionPrice})
   `;
 
   await sql`
