@@ -11,6 +11,15 @@ export default auth.middleware({
     "/trainer/apply",
     "/auth/callback",
     "/api/profile",
+    "/api/trainers",
+    "/api/programs",
+    "/api/trainer-applications",
+    "/api/availability",
+    "/api/bookings",
+    "/api/trainer-programs",
+    "/api/realtime/config",
+    "/api/realtime/bookings",
+    "/api/admin/trainer-applications",
   ],
 });
 

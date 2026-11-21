@@ -3,7 +3,12 @@ import { defineConfig } from "@neon/config/v1";
 export default defineConfig({
   // Declare your Neon services here
   preview: {
-    realtime: true,
+    realtime: {
+      allowedOrigins: [
+        "http://localhost:3000",
+        "https://forge-five.vercel.app",
+      ],
+    },
   },
   auth: true,
   aiGateway: true,

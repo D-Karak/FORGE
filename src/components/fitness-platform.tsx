@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import AuthForm, { SessionControl } from "@/components/auth-form";
+import LiveBookings from "@/components/live-bookings";
 
 type Trainer = {
   id: string;
@@ -414,9 +415,28 @@ function ProgramEditorModal({
   const [videoFiles, setVideoFiles] = useState<File[]>([]);
   const uploadInputRef = useRef<HTMLInputElement>(null);
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    onSave();
+    try {
+      const response = await fetch("/api/trainer-programs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: name,
+          category,
+          description,
+          weeks: Number(weeks),
+          lessons: videoFiles.length,
+          price: Number(price),
+        }),
+      });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "Could not save the draft.");
+      notify("Program draft saved");
+      onSave();
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Could not save the draft.");
+    }
   }
 
   return (
@@ -918,9 +938,42 @@ export default function FitnessPlatform() {
     setMessageText("");
   }
 
-  function confirmBooking() {
-    setDialog(null);
-    notify(`Demo session request: ${formatBookingDate(selectedDate)} at ${selectedSlot}. No payment was taken.`);
+  async function confirmBooking() {
+    const timeMatch = selectedSlot.match(/(\d+):(\d+)\s*(AM|PM)/i);
+    if (!timeMatch) {
+      notify("Choose a valid session time");
+      return;
+    }
+
+    let hours = Number(timeMatch[1]);
+    const minutes = Number(timeMatch[2]);
+    const meridiem = timeMatch[3].toUpperCase();
+    if (meridiem === "PM" && hours !== 12) hours += 12;
+    if (meridiem === "AM" && hours === 12) hours = 0;
+
+    const startsAt = new Date(selectedDate);
+    startsAt.setHours(hours, minutes, 0, 0);
+
+    try {
+      const response = await fetch("/api/bookings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          trainerSlug: selectedTrainer.id,
+          startsAt: startsAt.toISOString(),
+          durationMinutes: 50,
+        }),
+      });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) {
+        throw new Error(result.error ?? "Could not book this session.");
+      }
+
+      setDialog(null);
+      notify(`Session booked for ${formatBookingDate(selectedDate)} at ${selectedSlot}.`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Could not book this session.");
+    }
   }
 
   function confirmPurchase() {
@@ -1180,9 +1233,30 @@ function DashboardHeading({ kicker, title, subtitle, action }: { kicker: string;
 }
 
 function TrainerApplicationPage({ notify }: { notify: (message: string) => void }) {
-  function submitApplication(event: FormEvent<HTMLFormElement>) {
+  async function submitApplication(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    notify("Your coach application is ready for review in this preview");
+    const form = new FormData(event.currentTarget);
+    const data = Object.fromEntries(form.entries());
+
+    try {
+      const response = await fetch("/api/trainer-applications", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: data.name,
+          city: data.city,
+          specialty: data.specialty,
+          languages: data.languages,
+          approach: data.approach,
+        }),
+      });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "Could not submit the application.");
+      notify("Coach application submitted for review");
+      event.currentTarget.reset();
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Could not submit the application.");
+    }
   }
 
   return (
@@ -1196,13 +1270,13 @@ function TrainerApplicationPage({ notify }: { notify: (message: string) => void 
       <form className="application-form" onSubmit={submitApplication}>
         <p className="eyebrow"><span /> COACH APPLICATION · 01 / 01</p>
         <h2>LET’S GET TO<br /><em>KNOW YOU.</em></h2>
-        <div className="editor-row"><label>Your name<input required placeholder="e.g. Arjun Mehta" /></label><label>City, state<input required placeholder="e.g. Mumbai, Maharashtra" /></label></div>
-        <label>What do you coach?<select defaultValue=""><option value="" disabled>Choose your main specialty</option><option>Strength & conditioning</option><option>Mobility & movement</option><option>Running & endurance</option><option>Nutrition & habits</option></select></label>
-        <label>Languages you coach in<input required placeholder="English, Hindi, ..." /></label>
-        <label>Your coaching approach<textarea required rows={4} placeholder="What can clients expect when they work with you?" /></label>
+        <div className="editor-row"><label>Your name<input name="name" required placeholder="e.g. Arjun Mehta" /></label><label>City, state<input name="city" required placeholder="e.g. Mumbai, Maharashtra" /></label></div>
+        <label>What do you coach?<select name="specialty" defaultValue="" required><option value="" disabled>Choose your main specialty</option><option>Strength & conditioning</option><option>Mobility & movement</option><option>Running & endurance</option><option>Nutrition & habits</option></select></label>
+        <label>Languages you coach in<input name="languages" required placeholder="English, Hindi, ..." /></label>
+        <label>Your coaching approach<textarea name="approach" required rows={4} placeholder="What can clients expect when they work with you?" /></label>
         <label className="credential-confirm"><input type="checkbox" required /><span>I confirm my profile information is accurate and I’m ready to coach clients online.</span></label>
         <button className="button button-red button-full" type="submit">SUBMIT FOR REVIEW <Icon name="arrow" size={15} /></button>
-        <small>We review each coach profile before it becomes public. This demo does not submit your information.</small>
+        <small>We review each coach profile before it becomes public.</small>
       </form>
     </div>
   );
@@ -1282,6 +1356,7 @@ function BookingsPage({ onBook, onCancel, onJoinCall }: { onBook: () => void; on
   return (
     <div className="dashboard-content">
       <DashboardHeading kicker="MAKE TIME FOR YOU" title={<>Your <em>bookings.</em></>} subtitle="Sessions, links, and a little more accountability." action={<button className="button button-red" onClick={onBook}><Icon name="plus" size={15} /> BOOK A SESSION</button>} />
+      <LiveBookings />
       <div className="content-tabs"><button className="content-tab-active">Upcoming <span>1</span></button><button>Past sessions</button></div>
       <div className="booking-list">
         <article className="booking-card">
@@ -1454,7 +1529,31 @@ function TrainerClients() {
 
 function AvailabilityPage({ day, setDay, notify }: { day: number; setDay: (day: number) => void; notify: (message: string) => void }) {
   const [slots, setSlots] = useState(["10:00 AM", "12:30 PM", "5:30 PM"]);
-  return <div className="dashboard-content"><DashboardHeading kicker="MAKE SPACE FOR YOUR WORK" title={<>Your <em>availability.</em></>} subtitle="Choose when clients can book time with you. Changes stay in your control." action={<button className="button button-red" onClick={() => notify("Availability saved")}>SAVE AVAILABILITY <Icon name="check" size={15} /></button>} /><div className="availability-layout"><section className="dashboard-panel availability-calendar"><div className="picker-heading"><button onClick={() => notify("Previous month")}>‹</button><b>MAY 2026</b><button onClick={() => notify("Next month")}>›</button></div><div className="availability-grid">{["M", "T", "W", "T", "F", "S", "S"].map((label, index) => <span className="date-day" key={`${label}${index}`}>{label}</span>)}{Array.from({ length: 35 }, (_, index) => index < 4 ? null : <button className={`${day === index - 3 ? "date-selected" : ""} ${index % 5 === 0 ? "calendar-has-slot" : ""}`} key={index} onClick={() => setDay(index - 3)}>{index - 3}</button>)}</div><div className="calendar-legend"><span><i /> Available hours</span><span><i /> Session booked</span></div></section><section className="dashboard-panel slot-editor"><p className="eyebrow"><span /> THURSDAY, MAY {day}</p><h2>Make room<br />for a good session.</h2><p>50-minute online coaching · IST</p><div className="availability-slots">{["9:00 AM", "10:00 AM", "12:30 PM", "3:00 PM", "5:30 PM", "7:00 PM"].map((slot) => <button className={slots.includes(slot) ? "slot-selected" : ""} key={slot} onClick={() => setSlots((current) => current.includes(slot) ? current.filter((item) => item !== slot) : [...current, slot])}>{slots.includes(slot) && <Icon name="check" size={13} />}{slot}</button>)}</div><button className="add-slot" onClick={() => notify("Custom slot picker is a UI preview only")}><Icon name="plus" size={15} /> ADD A CUSTOM SLOT</button><div className="booking-window-info"><Icon name="clock" size={16} /><span>Clients can book 12 hours ahead<br />and up to 60 days in advance.</span></div></section></div></div>;
+  async function saveAvailability() {
+    try {
+      for (const slot of slots) {
+        const match = slot.match(/(\d+):(\d+)\s*(AM|PM)/i);
+        if (!match) continue;
+        let hours = Number(match[1]);
+        const minutes = Number(match[2]);
+        if (match[3].toUpperCase() === "PM" && hours !== 12) hours += 12;
+        if (match[3].toUpperCase() === "AM" && hours === 12) hours = 0;
+        const startsAt = new Date(2026, 10, day, hours, minutes);
+        const response = await fetch("/api/availability", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ startsAt: startsAt.toISOString(), durationMinutes: 50 }),
+        });
+        const result = await response.json() as { error?: string };
+        if (!response.ok) throw new Error(result.error ?? "Could not save availability.");
+      }
+      notify("Availability saved");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Could not save availability.");
+    }
+  }
+
+  return <div className="dashboard-content"><DashboardHeading kicker="MAKE SPACE FOR YOUR WORK" title={<>Your <em>availability.</em></>} subtitle="Choose when clients can book time with you. Changes stay in your control." action={<button className="button button-red" onClick={saveAvailability}>SAVE AVAILABILITY <Icon name="check" size={15} /></button>} /><div className="availability-layout"><section className="dashboard-panel availability-calendar"><div className="picker-heading"><button onClick={() => notify("Previous month")}>‹</button><b>NOVEMBER 2026</b><button onClick={() => notify("Next month")}>›</button></div><div className="availability-grid">{["M", "T", "W", "T", "F", "S", "S"].map((label, index) => <span className="date-day" key={`${label}${index}`}>{label}</span>)}{Array.from({ length: 35 }, (_, index) => index < 6 ? null : <button className={`${day === index - 5 ? "date-selected" : ""} ${index % 5 === 0 ? "calendar-has-slot" : ""}`} key={index} onClick={() => setDay(index - 5)}>{index - 5}</button>)}</div><div className="calendar-legend"><span><i /> Available hours</span><span><i /> Session booked</span></div></section><section className="dashboard-panel slot-editor"><p className="eyebrow"><span /> {day} NOVEMBER</p><h2>Make room<br />for a good session.</h2><p>50-minute online coaching · IST</p><div className="availability-slots">{["9:00 AM", "10:00 AM", "12:30 PM", "3:00 PM", "5:30 PM", "7:00 PM"].map((slot) => <button className={slots.includes(slot) ? "slot-selected" : ""} key={slot} onClick={() => setSlots((current) => current.includes(slot) ? current.filter((item) => item !== slot) : [...current, slot])}>{slots.includes(slot) && <Icon name="check" size={13} />}{slot}</button>)}</div><button className="add-slot" onClick={() => notify("Custom slot picker is a UI preview only")}><Icon name="plus" size={15} /> ADD A CUSTOM SLOT</button><div className="booking-window-info"><Icon name="clock" size={16} /><span>Clients can book 12 hours ahead<br />and up to 60 days in advance.</span></div></section></div></div>;
 }
 
 function EarningsPage() {

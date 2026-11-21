@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import nextEnv from "@next/env";
 import { neon } from "@neondatabase/serverless";
 
@@ -11,13 +11,23 @@ if (!connectionString) {
   throw new Error("DATABASE_URL_UNPOOLED or DATABASE_URL is required.");
 }
 
-const migration = await readFile(
-  new URL("../src/db/migrations/0001_user_profiles.sql", import.meta.url),
-  "utf8",
-);
-
 const sql = neon(connectionString);
-await sql.query(migration);
+const migrationsDirectory = new URL("../src/db/migrations/", import.meta.url);
+const migrationNames = (await readdir(migrationsDirectory)).filter((name) => /\.sql$/.test(name)).sort();
+
+for (const migrationName of migrationNames) {
+  const migration = await readFile(new URL(migrationName, migrationsDirectory), "utf8");
+  const statements = migration
+    .split(";")
+    .map((statement) => statement.trim())
+    .filter(Boolean);
+
+  for (const statement of statements) {
+    await sql.query(`${statement};`);
+  }
+  console.log(`Applied migration ${migrationName}.`);
+}
+
 const [verification] = await sql`SELECT to_regclass('public.user_profiles') IS NOT NULL AS exists`;
 
 if (verification?.exists !== true) {
