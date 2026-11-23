@@ -22,6 +22,15 @@ type Trainer = {
   languages: string[];
 };
 
+type BookableTrainer = {
+  slug: string;
+  name: string;
+  title: string;
+  city: string;
+  specialty: string;
+  price: number;
+};
+
 type Program = {
   id: string;
   title: string;
@@ -785,9 +794,6 @@ const initialMessagesByConversation: Record<number, typeof initialMessages> = {
   ],
 };
 
-const firstAvailableBookingDate = new Date(2026, 10, 18);
-const lastAvailableBookingDate = new Date(2027, 0, 13);
-
 function formatBookingDate(date: Date) {
   return new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric" }).format(date);
 }
@@ -877,6 +883,10 @@ export default function FitnessPlatform() {
   const [messagesByConversation, setMessagesByConversation] = useState(initialMessagesByConversation);
   const [selectedSlot, setSelectedSlot] = useState("5:30 PM");
   const [selectedDate, setSelectedDate] = useState(new Date(2026, 10, 19));
+  const [bookingTrainers, setBookingTrainers] = useState<BookableTrainer[]>([]);
+  const [bookingTrainerSlug, setBookingTrainerSlug] = useState("");
+  const [bookingTrainersLoading, setBookingTrainersLoading] = useState(false);
+  const [bookingTrainersError, setBookingTrainersError] = useState("");
   const [maxPrice, setMaxPrice] = useState(5000);
   const [accountRole, setAccountRole] = useState<"client" | "trainer">("client");
   const [filterOpen, setFilterOpen] = useState(false);
@@ -911,6 +921,13 @@ export default function FitnessPlatform() {
     const day = index - bookingMonthOffset + 1;
     return day > 0 && day <= bookingMonthDayCount ? new Date(bookingMonthYear, bookingMonthIndex, day) : null;
   });
+  const firstAvailableBookingDate = new Date();
+  firstAvailableBookingDate.setHours(0, 0, 0, 0);
+  firstAvailableBookingDate.setDate(firstAvailableBookingDate.getDate() + 1);
+  const lastAvailableBookingDate = new Date();
+  lastAvailableBookingDate.setHours(23, 59, 59, 999);
+  lastAvailableBookingDate.setDate(lastAvailableBookingDate.getDate() + 60);
+  const selectedBookingTrainer = bookingTrainers.find((trainer) => trainer.slug === bookingTrainerSlug) ?? null;
   const canGoToPreviousBookingMonth =
     bookingMonthYear > firstAvailableBookingDate.getFullYear() ||
     (bookingMonthYear === firstAvailableBookingDate.getFullYear() && bookingMonthIndex > firstAvailableBookingDate.getMonth());
@@ -922,6 +939,84 @@ export default function FitnessPlatform() {
     setToast(message);
     window.setTimeout(() => setToast(""), 2800);
   }
+
+  function openBooking(trainerSlug?: string) {
+    const firstDate = new Date();
+    firstDate.setHours(0, 0, 0, 0);
+    firstDate.setDate(firstDate.getDate() + 1);
+    setSelectedDate(firstDate);
+    setBookingMonth(new Date(firstDate.getFullYear(), firstDate.getMonth(), 1));
+    setSelectedSlot("5:30 PM");
+    setBookingTrainerSlug(trainerSlug ?? "");
+    setBookingTrainers([]);
+    setBookingTrainersError("");
+    setBookingTrainersLoading(true);
+    setDialog("booking");
+  }
+
+  useEffect(() => {
+    if (dialog !== "booking") return;
+    let active = true;
+
+    fetch("/api/trainers", { cache: "no-store" })
+      .then(async (response) => {
+        const result = await response.json() as {
+          error?: unknown;
+          trainers?: unknown;
+        };
+        if (!response.ok) {
+          throw new Error(typeof result.error === "string" ? result.error : "Could not load coaches.");
+        }
+        if (!Array.isArray(result.trainers)) {
+          throw new Error("The server returned an invalid coach list.");
+        }
+
+        const coaches = result.trainers.flatMap((value): BookableTrainer[] => {
+          if (typeof value !== "object" || value === null) return [];
+          const coach = value as Record<string, unknown>;
+          if (
+            typeof coach.slug !== "string" ||
+            typeof coach.name !== "string" ||
+            typeof coach.title !== "string" ||
+            typeof coach.city !== "string" ||
+            typeof coach.specialty !== "string" ||
+            typeof coach.session_price !== "number"
+          ) {
+            return [];
+          }
+
+          return [{
+            slug: coach.slug,
+            name: coach.name,
+            title: coach.title,
+            city: coach.city,
+            specialty: coach.specialty,
+            price: coach.session_price,
+          }];
+        });
+
+        if (coaches.length === 0) {
+          throw new Error("There are no approved coaches available to book yet.");
+        }
+        if (!active) return;
+
+        setBookingTrainers(coaches);
+        setBookingTrainerSlug((current) =>
+          coaches.some((coach) => coach.slug === current) ? current : "",
+        );
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setBookingTrainersError(error instanceof Error ? error.message : "Could not load coaches.");
+      })
+      .finally(() => {
+        if (active) setBookingTrainersLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [dialog]);
 
   function toggleFavorite(id: string) {
     setFavoriteIds((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id]);
@@ -940,6 +1035,11 @@ export default function FitnessPlatform() {
   }
 
   async function confirmBooking() {
+    if (!selectedBookingTrainer) {
+      notify("Choose a coach before requesting a session.");
+      return;
+    }
+
     const timeMatch = selectedSlot.match(/(\d+):(\d+)\s*(AM|PM)/i);
     if (!timeMatch) {
       notify("Choose a valid session time");
@@ -960,7 +1060,7 @@ export default function FitnessPlatform() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          trainerSlug: selectedTrainer.id,
+          trainerSlug: selectedBookingTrainer.slug,
           startsAt: startsAt.toISOString(),
           durationMinutes: 50,
         }),
@@ -971,7 +1071,7 @@ export default function FitnessPlatform() {
       }
 
       setDialog(null);
-      notify(`Session booked for ${formatBookingDate(selectedDate)} at ${selectedSlot}.`);
+      notify(`Session with ${selectedBookingTrainer.name} requested for ${formatBookingDate(selectedDate)} at ${selectedSlot}.`);
     } catch (error) {
       notify(error instanceof Error ? error.message : "Could not book this session.");
     }
@@ -1128,14 +1228,14 @@ export default function FitnessPlatform() {
               <div className="profile-cover" style={{ backgroundImage: `linear-gradient(90deg,rgba(8,8,8,.9),rgba(8,8,8,.2)),url("${selectedTrainer.image}")` }} />
               <div className="profile-overview">
                 <div className="profile-identity"><Avatar trainer={selectedTrainer} size="lg" /><div><span className="verified-label"><Icon name="check" size={12} /> VERIFIED COACH</span><h1>{selectedTrainer.name}</h1><p>{selectedTrainer.title}</p><div className="coach-location"><Icon name="pin" size={14} /> {selectedTrainer.location} <span>·</span> {selectedTrainer.languages.join(" · ")}</div></div></div>
-                <div className="profile-actions"><button className="button button-outline" onClick={() => setDialog("signin")}><Icon name="chat" size={16} /> MESSAGE</button><button className="button button-red" onClick={() => setDialog("booking")}>BOOK A SESSION <Icon name="arrow" size={15} /></button></div>
+                <div className="profile-actions"><button className="button button-outline" onClick={() => setDialog("signin")}><Icon name="chat" size={16} /> MESSAGE</button><button className="button button-red" onClick={() => openBooking(selectedTrainer.id)}>BOOK A SESSION <Icon name="arrow" size={15} /></button></div>
               </div>
               <div className="profile-content"><div className="profile-main"><div className="detail-tabs">{["Overview", "Programs", "Reviews"].map((item) => <button className={activeTab === item ? "detail-tab-active" : ""} key={item} onClick={() => setActiveTab(item)}>{item}</button>)}</div>
                 {activeTab === "Overview" && <><p className="profile-bio">{selectedTrainer.bio}</p><h2 className="detail-heading">HOW I COACH</h2><p className="detail-copy">A clear plan, honest conversations, and progress you can actually sustain. We start with what you have — your schedule, your experience, your goals — and build from there.</p><h2 className="detail-heading">A FEW THINGS I FOCUS ON</h2><div className="specialty-chips"><span>{selectedTrainer.specialty}</span><span>Habit building</span><span>Personal coaching</span></div></>}
                 {activeTab === "Programs" && <div className="mini-program-grid">{programs.filter((program) => program.trainer === selectedTrainer.name).map((program) => <ProgramCard key={program.id} program={program} />)}</div>}
                 {activeTab === "Reviews" && <div className="review-card"><span className="coach-rating"><Icon name="star" size={14} /> 5.0</span><p>“For the first time, training feels like something I can keep doing. Every session has a purpose, but never feels intimidating.”</p><small>RIYA S. · CLIENT FOR 4 MONTHS</small></div>}
                 <h2 className="detail-heading">A LITTLE MORE ABOUT ME</h2><div className="about-row"><span>Languages</span><b>{selectedTrainer.languages.join(", ")}</b></div><div className="about-row"><span>Coaching online</span><b>Across India</b></div></div>
-                <aside className="profile-booking-card"><p className="eyebrow"><span /> WORK WITH {selectedTrainer.name.split(" ")[0].toUpperCase()}</p><h3>A good place<br />to start.</h3><p>One-on-one online coaching, built around you.</p><div><span>SESSION</span><b>₹{selectedTrainer.price.toLocaleString("en-IN")} <small>/ 50 min</small></b></div><button className="button button-red button-full" onClick={() => setDialog("booking")}>CHECK AVAILABILITY <Icon name="arrow" size={15} /></button><button className="profile-message" onClick={() => setDialog("signin")}>Have a question? Message your coach <Icon name="arrow" size={13} /></button></aside></div>
+                <aside className="profile-booking-card"><p className="eyebrow"><span /> WORK WITH {selectedTrainer.name.split(" ")[0].toUpperCase()}</p><h3>A good place<br />to start.</h3><p>One-on-one online coaching, built around you.</p><div><span>SESSION</span><b>₹{selectedTrainer.price.toLocaleString("en-IN")} <small>/ 50 min</small></b></div><button className="button button-red button-full" onClick={() => openBooking(selectedTrainer.id)}>CHECK AVAILABILITY <Icon name="arrow" size={15} /></button><button className="profile-message" onClick={() => setDialog("signin")}>Have a question? Message your coach <Icon name="arrow" size={13} /></button></aside></div>
               <section className="public-section profile-programs"><SectionTitle kicker="LEARN AT YOUR OWN PACE" title={<>Programs from<br />{selectedTrainer.name.split(" ")[0]}.</>} action="ALL PROGRAMS" href="/programs" /><div className="program-grid">{programs.filter((program) => program.trainer === selectedTrainer.name).length > 0 ? programs.filter((program) => program.trainer === selectedTrainer.name).map((program) => <ProgramCard key={program.id} program={program} />) : <p className="muted-copy">New programs are on the way. Send a message to ask about coaching.</p>}</div></section>
               <Footer />
             </div>
@@ -1158,9 +1258,9 @@ export default function FitnessPlatform() {
 
       {isDashboard && (
         <DashboardShell trainerMode={isTrainerMode} onNotifications={() => setNotificationOpen((value) => !value)}>
-          {pathname === "/dashboard" && <ClientDashboard onBook={() => setDialog("booking")} onProgram={openLessonPlayer} />}
+          {pathname === "/dashboard" && <ClientDashboard onBook={() => openBooking()} onProgram={openLessonPlayer} />}
           {pathname === "/my-learning" && <LearningPage onProgram={(id) => openLessonPlayer(id)} />}
-          {pathname === "/bookings" && <BookingsPage onBook={() => setDialog("booking")} onCancel={() => notify("Cancellation request submitted in this preview")} onJoinCall={joinClientCall} />}
+          {pathname === "/bookings" && <BookingsPage onBook={() => openBooking()} onCancel={() => notify("Cancellation request submitted in this preview")} onJoinCall={joinClientCall} />}
           {pathname === "/messages" && <MessagesPage active={activeConversation} setActive={setActiveConversation} messages={messagesByConversation[activeConversation]} text={messageText} setText={setMessageText} onSend={sendMessage} />}
           {pathname === "/settings" && <SettingsPage notify={notify} />}
           {pathname === "/trainer/dashboard" && <TrainerDashboard onCreate={() => setDialog("program-editor")} onStartSession={startCoachCall} />}
@@ -1182,10 +1282,36 @@ export default function FitnessPlatform() {
             <div className="booking-modal-intro">
               <p className="eyebrow"><span /> YOUR FIRST SESSION</p>
               <h2>LET’S FIND<br /><em>YOUR TIME.</em></h2>
-              <p>Online coaching with {selectedTrainer.name}. Pick a date and a time that works for you.</p>
-              <div className="booking-coach"><Avatar trainer={selectedTrainer} /><span><b>{selectedTrainer.name}</b><small>50 min · Online · ₹{selectedTrainer.price.toLocaleString("en-IN")}</small></span></div>
+              <p>{selectedBookingTrainer ? `Online coaching with ${selectedBookingTrainer.name}. Pick a date and a time that works for you.` : "Choose a coach who fits your goals, then pick a date and time that works for you."}</p>
+              {selectedBookingTrainer && (
+                <div className="booking-coach">
+                  <span className="booking-coach-initials" aria-hidden="true">{selectedBookingTrainer.name.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span>
+                  <span><b>{selectedBookingTrainer.name}</b><small>50 min · Online · ₹{selectedBookingTrainer.price.toLocaleString("en-IN")}</small></span>
+                </div>
+              )}
             </div>
             <div className="booking-picker">
+              <p className="slot-label">CHOOSE YOUR COACH</p>
+              {bookingTrainersLoading && <p className="booking-status" aria-live="polite">Finding available coaches…</p>}
+              {bookingTrainersError && <p className="booking-status booking-status-error" role="alert">{bookingTrainersError}</p>}
+              {!bookingTrainersLoading && !bookingTrainersError && (
+                <div className="booking-trainer-list" role="radiogroup" aria-label="Choose a coach">
+                  {bookingTrainers.map((trainer) => (
+                    <button
+                      type="button"
+                      className={`booking-trainer-option${bookingTrainerSlug === trainer.slug ? " booking-trainer-option-selected" : ""}`}
+                      key={trainer.slug}
+                      role="radio"
+                      aria-checked={bookingTrainerSlug === trainer.slug}
+                      onClick={() => setBookingTrainerSlug(trainer.slug)}
+                    >
+                      <span className="booking-trainer-initials" aria-hidden="true">{trainer.name.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span>
+                      <span className="booking-trainer-copy"><b>{trainer.name}</b><small>{trainer.specialty} · {trainer.city}</small></span>
+                      <span className="booking-trainer-price">₹{trainer.price.toLocaleString("en-IN")}<small>/ session</small></span>
+                    </button>
+                  ))}
+                </div>
+              )}
               <div className="picker-heading">
                 <button type="button" aria-label="Previous month" disabled={!canGoToPreviousBookingMonth} onClick={() => setBookingMonth((month) => new Date(month.getFullYear(), month.getMonth() - 1, 1))}>‹</button>
                 <b>{bookingMonth.toLocaleDateString("en-US", { month: "long", year: "numeric" }).toUpperCase()}</b>
@@ -1215,7 +1341,7 @@ export default function FitnessPlatform() {
                   <button type="button" key={slot} className={selectedSlot === slot ? "slot-selected" : ""} aria-pressed={selectedSlot === slot} onClick={() => setSelectedSlot(slot)}>{slot}</button>
                 ))}
               </div>
-              <button className="button button-red button-full" onClick={confirmBooking}>REQUEST SESSION <Icon name="arrow" size={15} /></button>
+              <button className="button button-red button-full" disabled={!selectedBookingTrainer || bookingTrainersLoading || Boolean(bookingTrainersError)} onClick={confirmBooking}>REQUEST SESSION <Icon name="arrow" size={15} /></button>
               <small className="booking-fineprint">Demo only — this preview doesn’t create a booking or process payment.</small>
             </div>
           </div>

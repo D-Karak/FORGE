@@ -842,7 +842,20 @@ a { color: inherit; text-decoration: none; }
 .booking-modal-intro { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; padding: 42px 30px; background: radial-gradient(ellipse at 10% 12%,#431812,#191311 70%); }
 .booking-modal-intro > p:not(.eyebrow) { color: #b3a8a2; font-size: 10px; line-height: 1.8; }
 .booking-modal-intro .booking-coach { margin-top: auto; padding-top: 20px; border-top: 1px solid #49332e; }
+.booking-coach-initials, .booking-trainer-initials { display: grid; width: 36px; height: 36px; flex: 0 0 36px; place-items: center; border: 1px solid #63372d; color: #ff765f; background: #281813; font-family: var(--display); font-size: 15px; font-weight: 700; }
 .booking-picker { padding: 55px 31px 25px; }
+.booking-picker > .slot-label:first-child { margin-top: 0; }
+.booking-trainer-list { display: grid; max-height: 178px; gap: 6px; overflow-y: auto; margin-bottom: 17px; }
+.booking-trainer-option { display: grid; min-height: 54px; grid-template-columns: 30px minmax(0,1fr) auto; align-items: center; gap: 9px; padding: 7px 9px; border: 1px solid #393633; color: white; background: #171615; cursor: pointer; text-align: left; transition: background .18s ease, border-color .18s ease; }
+.booking-trainer-option:hover { border-color: #765047; background: #201917; }
+.booking-trainer-option-selected { border-color: var(--red); background: #281713; }
+.booking-trainer-option .booking-trainer-initials { width: 30px; height: 30px; font-size: 12px; }
+.booking-trainer-copy, .booking-trainer-price { display: grid; min-width: 0; gap: 3px; }
+.booking-trainer-copy b { overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.booking-trainer-copy small, .booking-trainer-price small { overflow: hidden; color: #96918c; font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+.booking-trainer-price { justify-items: end; font-size: 9px; font-weight: 700; white-space: nowrap; }
+.booking-status { margin: 0 0 15px; color: #aaa; font-size: 9px; line-height: 1.6; }
+.booking-status-error { color: #ff8873; }
 .booking-picker .picker-heading { margin-bottom: 9px; }
 .booking-picker .picker-heading button { width: 40px; height: 40px; }
 .booking-picker .date-grid { margin-bottom: 19px; }
@@ -857,6 +870,7 @@ a { color: inherit; text-decoration: none; }
 .slot-grid button { min-height: 40px; border: 1px solid #393939; color: #ccc; background: #181818; cursor: pointer; font-size: 10px; }
 .slot-grid button.slot-selected { border-color: var(--red); color: white; background: #381a15; }
 .booking-picker .button { min-height: 44px; font-size: 9px; }
+.booking-picker .button:disabled { cursor: not-allowed; opacity: .5; }
 .booking-fineprint { display: block; margin-top: 9px; color: #888; font-size: 9px; line-height: 1.5; text-align: center; }
 .manage-booking-modal { padding: 32px; }
 .manage-booking-modal h2 { margin: 0 0 20px; font-family: var(--display); font-size: 42px; font-weight: 800; letter-spacing: -.02em; line-height: .9; }
