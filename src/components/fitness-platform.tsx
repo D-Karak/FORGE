@@ -1233,6 +1233,33 @@ function DashboardHeading({ kicker, title, subtitle, action }: { kicker: string;
   return <div className="dashboard-heading"><div><p className="eyebrow"><span />{kicker}</p><h1>{title}</h1><p>{subtitle}</p></div>{action}</div>;
 }
 
+async function readApplicationResponse(
+  response: Response,
+  fallbackMessage: string,
+): Promise<Record<string, unknown>> {
+  const body = await response.text();
+  let result: unknown;
+
+  try {
+    result = JSON.parse(body);
+  } catch {
+    throw new Error(`${fallbackMessage} (server returned HTTP ${response.status}).`);
+  }
+
+  if (typeof result !== "object" || result === null || Array.isArray(result)) {
+    throw new Error(`${fallbackMessage} (server returned an invalid response).`);
+  }
+
+  const payload = result as Record<string, unknown>;
+  if (!response.ok) {
+    throw new Error(
+      typeof payload.error === "string" ? payload.error : `${fallbackMessage} (HTTP ${response.status}).`,
+    );
+  }
+
+  return payload;
+}
+
 function TrainerApplicationPage({ notify }: { notify: (message: string) => void }) {
   const router = useRouter();
   const [pageState, setPageState] = useState<"checking" | "signed-out" | "client-account" | "new" | "pending" | "error">("checking");
@@ -1250,16 +1277,19 @@ function TrainerApplicationPage({ notify }: { notify: (message: string) => void 
           return;
         }
 
-        const result = await response.json() as {
-          error?: string;
-          profileRole?: string | null;
-          applications?: Array<{ status?: string }>;
-        };
-        if (!response.ok) {
-          throw new Error(result.error ?? "Could not load your coach application.");
+        const result = await readApplicationResponse(response, "Could not load your coach application.");
+        if (result.profileRole !== null && result.profileRole !== "client" && result.profileRole !== "trainer") {
+          throw new Error("The server returned an invalid account role.");
+        }
+        if (!Array.isArray(result.applications)) {
+          throw new Error("The server returned an invalid coach application list.");
         }
 
-        const latestStatus = result.applications?.[0]?.status;
+        const latestApplication = result.applications[0];
+        const latestStatus = typeof latestApplication === "object" && latestApplication !== null &&
+          "status" in latestApplication && typeof latestApplication.status === "string"
+          ? latestApplication.status
+          : null;
         if (!active) return;
         if (result.profileRole === "client") {
           setPageState("client-account");
@@ -1315,8 +1345,13 @@ function TrainerApplicationPage({ notify }: { notify: (message: string) => void 
           sessionPrice: Number(data.sessionPrice),
         }),
       });
-      const result = await response.json() as { error?: string };
-      if (!response.ok) throw new Error(result.error ?? "Could not submit the application.");
+      const result = await readApplicationResponse(response, "Could not submit the application.");
+      if (
+        typeof result.application !== "object" || result.application === null ||
+        !("status" in result.application) || result.application.status !== "pending"
+      ) {
+        throw new Error("The server returned an invalid application response.");
+      }
       formElement.reset();
       setPageState("pending");
       notify("Coach application submitted for review");
