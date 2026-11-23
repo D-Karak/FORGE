@@ -2,10 +2,11 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
 import AuthForm, { SessionControl, type AuthenticationResult } from "@/components/auth-form";
 import LiveBookings from "@/components/live-bookings";
 import { authClient } from "@/lib/auth/client";
+import { PROFILE_PHOTO_MAX_BYTES } from "@/lib/profile-photo";
 
 type Trainer = {
   id: string;
@@ -29,6 +30,7 @@ type BookableTrainer = {
   city: string;
   specialty: string;
   price: number;
+  hasPhoto: boolean;
 };
 
 function getAuthenticationDestination(account: AuthenticationResult, next?: string | null) {
@@ -1111,6 +1113,7 @@ export default function FitnessPlatform() {
             city: coach.city,
             specialty: coach.specialty,
             price: coach.session_price,
+            hasPhoto: coach.has_profile_photo === true,
           }];
         });
 
@@ -1448,6 +1451,10 @@ function TrainerApplicationPage({ notify }: { notify: (message: string) => void 
   const [pageMessage, setPageMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [profilePhoto, setProfilePhoto] = useState<string | null>(null);
+  const [profilePhotoName, setProfilePhotoName] = useState("");
+  const [profilePhotoError, setProfilePhotoError] = useState("");
+  const profilePhotoInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     let active = true;
@@ -1505,6 +1512,42 @@ function TrainerApplicationPage({ notify }: { notify: (message: string) => void 
     }
   }
 
+  function chooseProfilePhoto(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setProfilePhotoError("");
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+      setProfilePhotoError("Choose a JPG, PNG, or WebP image.");
+      event.target.value = "";
+      return;
+    }
+    if (file.size >= PROFILE_PHOTO_MAX_BYTES) {
+      setProfilePhotoError("Your photo must be smaller than 500 KB.");
+      event.target.value = "";
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onerror = () => setProfilePhotoError("Could not read this photo. Please try another image.");
+    reader.onload = () => {
+      if (typeof reader.result !== "string") {
+        setProfilePhotoError("Could not read this photo. Please try another image.");
+        return;
+      }
+      setProfilePhoto(reader.result);
+      setProfilePhotoName(file.name);
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function removeProfilePhoto() {
+    setProfilePhoto(null);
+    setProfilePhotoName("");
+    setProfilePhotoError("");
+    if (profilePhotoInputRef.current) profilePhotoInputRef.current.value = "";
+  }
+
   async function submitApplication(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formElement = event.currentTarget;
@@ -1525,6 +1568,7 @@ function TrainerApplicationPage({ notify }: { notify: (message: string) => void 
           approach: data.approach,
           badges: data.badges,
           sessionPrice: Number(data.sessionPrice),
+          profilePhoto,
         }),
       });
       const result = await readApplicationResponse(response, "Could not submit the application.");
@@ -1535,6 +1579,9 @@ function TrainerApplicationPage({ notify }: { notify: (message: string) => void 
         throw new Error("The server returned an invalid application response.");
       }
       formElement.reset();
+      setProfilePhoto(null);
+      setProfilePhotoName("");
+      setProfilePhotoError("");
       setPageState("pending");
       notify("Coach application submitted for review");
     } catch (error) {
@@ -1603,6 +1650,34 @@ function TrainerApplicationPage({ notify }: { notify: (message: string) => void 
           <label>Your expertise<select name="specialty" defaultValue="" required><option value="" disabled>Choose your main expertise</option><option>Strength & conditioning</option><option>Mobility & movement</option><option>Running & endurance</option><option>Nutrition & habits</option><option>Boxing & combat sports</option></select></label>
           <label>Languages you coach in<input name="languages" required placeholder="English, Hindi, ..." /></label>
           <label>Certifications & badges<input name="badges" placeholder="e.g. ACE-CPT, Precision Nutrition" /></label>
+          <div className="application-photo-field">
+            <div className="application-photo-heading"><span>Profile photo <small>OPTIONAL</small></span><p>A clear portrait helps clients recognize you.</p></div>
+            <div className="application-photo-control">
+              <div
+                className={`application-photo-preview${profilePhoto ? " has-photo" : ""}`}
+                style={profilePhoto ? { backgroundImage: `url("${profilePhoto}")` } : undefined}
+                role={profilePhoto ? "img" : undefined}
+                aria-label={profilePhoto ? "Selected profile photo preview" : undefined}
+              >
+                {!profilePhoto && <span>PHOTO</span>}
+              </div>
+              <div className="application-photo-actions">
+                <label className="application-photo-button">
+                  {profilePhoto ? "CHANGE PHOTO" : "CHOOSE PHOTO"}
+                  <input
+                    ref={profilePhotoInputRef}
+                    className="application-photo-input"
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    onChange={chooseProfilePhoto}
+                  />
+                </label>
+                <p>{profilePhotoName || "JPG, PNG or WebP · under 500 KB"}</p>
+                {profilePhoto && <button className="application-photo-remove" type="button" onClick={removeProfilePhoto}>REMOVE PHOTO</button>}
+              </div>
+            </div>
+            {profilePhotoError && <p className="application-feedback" role="alert">{profilePhotoError}</p>}
+          </div>
           <label>Charge per 50-minute session (₹)<input name="sessionPrice" type="number" min="1" max="100000" required defaultValue="1500" /></label>
           <label>Your coaching approach<textarea name="approach" required rows={4} placeholder="What can clients expect when they work with you?" /></label>
           {pageMessage && <p className="application-feedback" role="alert">{pageMessage}</p>}
@@ -1711,6 +1786,9 @@ function ClientDashboard({
 
 function BookableCoachCard({ trainer, onBook }: { trainer: BookableTrainer; onBook: (slug: string) => void }) {
   const knownTrainer = trainers.find((item) => item.id === trainer.slug);
+  const imageUrl = trainer.hasPhoto
+    ? `/api/trainers/${encodeURIComponent(trainer.slug)}/photo`
+    : knownTrainer?.image;
   const initials = trainer.name.split(" ").map((part) => part[0]).slice(0, 2).join("");
 
   return (
@@ -1721,11 +1799,11 @@ function BookableCoachCard({ trainer, onBook }: { trainer: BookableTrainer; onBo
       aria-label={`Check availability with ${trainer.name}, ${trainer.specialty}, ₹${trainer.price} per session`}
     >
       <span
-        className={`available-coach-art${knownTrainer ? " available-coach-art-photo" : ""}`}
-        style={knownTrainer ? { backgroundImage: `linear-gradient(180deg,transparent 35%,rgba(0,0,0,.7)),url("${knownTrainer.image}")` } : undefined}
+        className={`available-coach-art${imageUrl ? " available-coach-art-photo" : ""}`}
+        style={imageUrl ? { backgroundImage: `linear-gradient(180deg,transparent 35%,rgba(0,0,0,.7)),url("${imageUrl}")` } : undefined}
       >
         <span className="coach-specialty">{trainer.specialty}</span>
-        {!knownTrainer && <b className="available-coach-initials">{initials}</b>}
+        {!imageUrl && <b className="available-coach-initials">{initials}</b>}
         <span className="verified-mark" title="Verified coach"><Icon name="check" size={12} /></span>
       </span>
       <span className="available-coach-details">
@@ -1842,6 +1920,9 @@ function CoachBookingPage({
   const [bookingConfirmation, setBookingConfirmation] = useState<CoachAvailabilitySlot | null>(null);
   const trainer = coaches.find((coach) => coach.slug === trainerSlug);
   const knownTrainer = trainers.find((item) => item.id === trainerSlug);
+  const imageUrl = trainer?.hasPhoto
+    ? `/api/trainers/${encodeURIComponent(trainer.slug)}/photo`
+    : knownTrainer?.image;
 
   useEffect(() => {
     let active = true;
@@ -1959,8 +2040,8 @@ function CoachBookingPage({
           </header>
           <div className="coach-booking-layout">
             <section className="coach-booking-profile">
-              <div className={`coach-booking-portrait${knownTrainer ? " coach-booking-portrait-photo" : ""}`} style={knownTrainer ? { backgroundImage: `linear-gradient(180deg,transparent 35%,rgba(0,0,0,.7)),url("${knownTrainer.image}")` } : undefined}>
-                {!knownTrainer && <b>{trainer.name.split(" ").map((part) => part[0]).slice(0, 2).join("")}</b>}
+              <div className={`coach-booking-portrait${imageUrl ? " coach-booking-portrait-photo" : ""}`} style={imageUrl ? { backgroundImage: `linear-gradient(180deg,transparent 35%,rgba(0,0,0,.7)),url("${imageUrl}")` } : undefined}>
+                {!imageUrl && <b>{trainer.name.split(" ").map((part) => part[0]).slice(0, 2).join("")}</b>}
                 <span className="verified-mark" title="Verified coach"><Icon name="check" size={12} /></span>
               </div>
               <p className="eyebrow"><span /> {trainer.specialty.toUpperCase()}</p>

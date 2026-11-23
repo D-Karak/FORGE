@@ -2,6 +2,7 @@ import { auth } from "@/lib/auth/server";
 import { sql } from "@/lib/db";
 import { getProfile } from "@/lib/profiles";
 import { randomUUID } from "node:crypto";
+import { decodeProfilePhotoDataUrl, hasProfilePhotoSchema } from "@/lib/profile-photo.server";
 
 export async function GET() {
   const { data: session } = await auth.getSession();
@@ -10,12 +11,22 @@ export async function GET() {
   }
 
   try {
-    const applications = await sql`
-      SELECT id, name, city, specialty, languages, approach, badges, session_price, status, submitted_at
-      FROM public.trainer_applications
-      WHERE user_id = ${session.user.id}
-      ORDER BY submitted_at DESC
-    `;
+    const hasPhotoSchema = await hasProfilePhotoSchema();
+    const applications = hasPhotoSchema
+      ? await sql`
+          SELECT id, name, city, specialty, languages, approach, badges, session_price,
+                 profile_photo IS NOT NULL AS has_profile_photo, status, submitted_at
+          FROM public.trainer_applications
+          WHERE user_id = ${session.user.id}
+          ORDER BY submitted_at DESC
+        `
+      : await sql`
+          SELECT id, name, city, specialty, languages, approach, badges, session_price,
+                 false AS has_profile_photo, status, submitted_at
+          FROM public.trainer_applications
+          WHERE user_id = ${session.user.id}
+          ORDER BY submitted_at DESC
+        `;
 
     const profile = await getProfile(session.user.id);
     return Response.json({ applications, profileRole: profile?.role ?? null });
@@ -46,6 +57,7 @@ export async function POST(request: Request) {
         approach?: unknown;
         badges?: unknown;
         sessionPrice?: unknown;
+        profilePhoto?: unknown;
       }
     | null;
 
@@ -70,6 +82,17 @@ export async function POST(request: Request) {
     return Response.json({ error: "Enter valid credentials and a session charge between ₹1 and ₹100,000." }, { status: 400 });
   }
 
+  if (
+    body.profilePhoto !== undefined &&
+    body.profilePhoto !== null &&
+    !decodeProfilePhotoDataUrl(body.profilePhoto)
+  ) {
+    return Response.json(
+      { error: "Choose a JPG, PNG, or WebP profile photo smaller than 500 KB." },
+      { status: 400 },
+    );
+  }
+
   const [existingApplication] = await sql`
     SELECT id
     FROM public.trainer_applications
@@ -81,16 +104,35 @@ export async function POST(request: Request) {
   }
 
   const badges = body.badges.split(/[,\n]/).map((value) => value.trim()).filter(Boolean);
+  const profilePhoto = typeof body.profilePhoto === "string" ? body.profilePhoto : null;
   const id = randomUUID();
   try {
-    await sql`
-      INSERT INTO public.trainer_applications
-        (id, user_id, name, city, specialty, languages, approach, badges, session_price)
-      VALUES
-        (${id}, ${session.user.id}, ${body.name.trim()}, ${body.city.trim()},
-         ${body.specialty.trim()}, ${body.languages.trim()}, ${body.approach.trim()},
-         ${badges}, ${body.sessionPrice})
-    `;
+    if (profilePhoto) {
+      if (!(await hasProfilePhotoSchema())) {
+        return Response.json(
+          { error: "Profile photo uploads are not available until the database update is applied." },
+          { status: 503 },
+        );
+      }
+
+      await sql`
+        INSERT INTO public.trainer_applications
+          (id, user_id, name, city, specialty, languages, approach, badges, session_price, profile_photo)
+        VALUES
+          (${id}, ${session.user.id}, ${body.name.trim()}, ${body.city.trim()},
+           ${body.specialty.trim()}, ${body.languages.trim()}, ${body.approach.trim()},
+           ${badges}, ${body.sessionPrice}, ${profilePhoto})
+      `;
+    } else {
+      await sql`
+        INSERT INTO public.trainer_applications
+          (id, user_id, name, city, specialty, languages, approach, badges, session_price)
+        VALUES
+          (${id}, ${session.user.id}, ${body.name.trim()}, ${body.city.trim()},
+           ${body.specialty.trim()}, ${body.languages.trim()}, ${body.approach.trim()},
+           ${badges}, ${body.sessionPrice})
+      `;
+    }
 
     await sql`
       UPDATE public.user_profiles

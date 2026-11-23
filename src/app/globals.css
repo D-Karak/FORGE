@@ -351,6 +351,21 @@ a { color: inherit; text-decoration: none; }
 .application-form .application-help, .application-status > p:not(.eyebrow) { margin: 0; color: #aaa; font-size: 10px; line-height: 1.8; }
 .application-form .application-feedback { margin: 0; color: #ff8873; font-size: 9px; line-height: 1.6; }
 .application-form .auth-form { margin-top: 0; }
+.application-photo-field { display: grid; gap: 10px; padding: 13px; border: 1px solid #393633; background: #101010; }
+.application-photo-heading > span { display: flex; align-items: center; gap: 8px; color: #ddd; font-size: 9px; font-weight: 700; letter-spacing: .5px; }
+.application-photo-heading small { color: #777; font-size: 7px; letter-spacing: .7px; }
+.application-photo-heading p { margin: 5px 0 0; color: #888; font-size: 8px; line-height: 1.5; }
+.application-photo-control { display: flex; align-items: center; gap: 12px; }
+.application-photo-preview { display: grid; width: 64px; height: 64px; flex: 0 0 64px; place-items: center; border: 1px solid #47403c; border-radius: 50%; color: #888; background: radial-gradient(circle at 50% 35%,#33221d,#171413 72%); background-position: center; background-size: cover; font-size: 7px; letter-spacing: .7px; }
+.application-photo-preview.has-photo { border-color: #9f4133; }
+.application-photo-actions { display: grid; justify-items: start; gap: 5px; }
+.application-form label.application-photo-button { display: inline-flex; min-height: 29px; align-items: center; padding: 0 10px; border: 1px solid #704137; color: #f0c4b8; background: #241815; cursor: pointer; font-size: 7px; font-weight: 700; letter-spacing: .6px; }
+.application-form .application-photo-button:hover { border-color: #bd5b47; background: #321e19; }
+.application-photo-input { position: absolute; width: 1px !important; height: 1px !important; min-height: 0 !important; padding: 0 !important; overflow: hidden; border: 0 !important; clip: rect(0,0,0,0); white-space: nowrap; clip-path: inset(50%); }
+.application-form .application-photo-button:focus-within { outline: 2px solid #bd5b47; outline-offset: 2px; }
+.application-photo-actions p, .application-form .application-photo-remove { margin: 0; color: #777; font-size: 7px; line-height: 1.5; }
+.application-form .application-photo-remove { padding: 0; border: 0; color: #c47b6d; background: transparent; cursor: pointer; font-weight: 700; letter-spacing: .5px; }
+.application-form .application-photo-remove:hover { color: #ff9a86; }
 
 /* Member, trainer, and admin workspaces */
 .app-layout { min-height: 100vh; background: #0d0d0d; }

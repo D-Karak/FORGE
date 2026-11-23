@@ -91,6 +91,8 @@ Before launch:
 - Add foreign keys, constraints, indexes, and transaction boundaries.
 - Add migration history and rollback procedures.
 - Test migrations on an isolated Neon branch of production-like data.
+- Apply `0004_trainer_profile_photos.sql` before deploying the coach-photo API; it adds nullable `profile_photo` columns to `trainer_applications` and `trainer_profiles`. This migration has not been applied.
+- Verify coach photo upload, approval, and public profile display after the migration.
 - Use parameterized SQL or an approved ORM throughout.
 - Remove demo-only constants from authenticated features.
 
