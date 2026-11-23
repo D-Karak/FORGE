@@ -32,15 +32,17 @@ export async function getProfile(userId: string): Promise<{ role: AccountRole } 
 export async function getOrCreateProfile(
   user: { id: string; name?: string | null },
   role: AccountRole,
+  displayName?: string,
 ): Promise<{ role: AccountRole }> {
   const existing = await getProfile(user.id);
   if (existing) {
     return existing;
   }
 
+  const profileName = displayName?.trim() || user.name || null;
   await sql`
     INSERT INTO public.user_profiles (user_id, role, display_name)
-    VALUES (${user.id}, ${role}, ${user.name ?? null})
+    VALUES (${user.id}, ${role}, ${profileName})
     ON CONFLICT (user_id) DO NOTHING
   `;
 

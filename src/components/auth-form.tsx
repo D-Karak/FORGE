@@ -6,48 +6,50 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
 
 type Props = {
-  role: AccountRole;
-  onAuthenticated: (role: AccountRole, trainerSetupRequired: boolean) => void;
+  onAuthenticated: (result: AuthenticationResult) => void;
+  next?: string | null;
 };
 
-async function saveProfile(role: AccountRole): Promise<{ role: AccountRole; trainerSetupRequired: boolean }> {
-  const response = await fetch("/api/profile", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ role }),
-  });
+export type AuthenticationResult =
+  | { needsProfileSetup: true }
+  | { needsProfileSetup: false; role: AccountRole; trainerSetupRequired: boolean };
+
+async function readProfile(): Promise<AuthenticationResult> {
+  const response = await fetch("/api/profile");
   const result = await response.json() as {
     error?: unknown;
     profile?: { role?: unknown };
     trainerSetupRequired?: unknown;
   };
 
+  if (response.status === 404) {
+    return { needsProfileSetup: true };
+  }
+
   if (!response.ok) {
     if (response.status === 401) {
-      throw new Error("Verify your email or sign in before continuing.");
+      throw new Error("Your session expired. Sign in again to continue.");
     }
 
-    throw new Error(typeof result.error === "string" ? result.error : "Could not save your account.");
+    throw new Error(typeof result.error === "string" ? result.error : "Could not load your account.");
   }
 
   if (result.profile?.role !== "client" && result.profile?.role !== "trainer") {
     throw new Error("The server returned an invalid account profile.");
   }
 
-  if (result.profile.role !== role) {
-    throw new Error(
-      `This email is already set up as a ${result.profile.role}. Switch accounts to continue with a separate ${role} account.`,
-    );
-  }
-
   if (typeof result.trainerSetupRequired !== "boolean") {
     throw new Error("The server returned an invalid coach setup status.");
   }
 
-  return { role: result.profile.role, trainerSetupRequired: result.trainerSetupRequired };
+  return {
+    needsProfileSetup: false,
+    role: result.profile.role,
+    trainerSetupRequired: result.trainerSetupRequired,
+  };
 }
 
-export default function AuthForm({ role, onAuthenticated }: Props) {
+export default function AuthForm({ onAuthenticated, next }: Props) {
   const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -104,17 +106,27 @@ export default function AuthForm({ role, onAuthenticated }: Props) {
         throw new Error(`You're signed in as ${accountEmail}. Switch accounts before using different credentials.`);
       }
 
-      const result = mode === "sign-up"
-        ? await authClient.signUp.email({ name: name.trim(), email: email.trim(), password })
-        : await authClient.signIn.email({ email: email.trim(), password });
+      if (mode === "sign-up") {
+        const result = await authClient.signUp.email({ name: name.trim(), email: email.trim(), password });
+        if (result.error) throw new Error(result.error.message);
 
-      if (result.error) {
-        throw new Error(result.error.message);
+        const session = await authClient.getSession();
+        if (session.error) throw new Error(session.error.message);
+        if (!session.data?.user) {
+          throw new Error("Check your email to verify your account, then sign in to finish setup.");
+        }
+
+        setAccountEmail(email.trim());
+        onAuthenticated({ needsProfileSetup: true });
+        return;
       }
 
-      const profile = await saveProfile(role);
+      const result = await authClient.signIn.email({ email: email.trim(), password });
+      if (result.error) throw new Error(result.error.message);
+
+      const profile = await readProfile();
       setAccountEmail(email.trim());
-      onAuthenticated(profile.role, profile.trainerSetupRequired);
+      onAuthenticated(profile);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Authentication failed. Try again.");
     } finally {
@@ -132,7 +144,9 @@ export default function AuthForm({ role, onAuthenticated }: Props) {
       }
 
       const callbackURL = new URL("/auth/callback", window.location.origin);
-      callbackURL.searchParams.set("role", role);
+      if (next?.startsWith("/book-session/")) {
+        callbackURL.searchParams.set("next", next);
+      }
       const result = await authClient.signIn.social({
         provider: "google",
         callbackURL: callbackURL.toString(),
@@ -247,6 +261,10 @@ export function SessionControl({
           profile?: { role?: unknown };
           trainerSetupRequired?: unknown;
         };
+        if (response.status === 404) {
+          router.replace("/profile-setup");
+          return;
+        }
         if (!response.ok) {
           throw new Error(typeof result.error === "string" ? result.error : "Could not load your account.");
         }
@@ -272,7 +290,7 @@ export function SessionControl({
     return () => {
       active = false;
     };
-  }, []);
+  }, [router]);
 
   async function signOut() {
     setErrorMessage("");

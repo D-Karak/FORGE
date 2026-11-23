@@ -49,7 +49,7 @@ export async function POST(request: Request) {
   }
 
   const [trainer] = await sql`
-    SELECT id, session_price
+    SELECT id
     FROM public.trainer_profiles
     WHERE slug = ${body.trainerSlug} AND approved = true AND suspended = false
     LIMIT 1
@@ -59,36 +59,27 @@ export async function POST(request: Request) {
     return Response.json({ error: "Trainer not found." }, { status: 404 });
   }
 
-  const duration = typeof body.durationMinutes === "number" ? body.durationMinutes : 50;
-
-  const [slot] = await sql`
-    INSERT INTO public.availability_slots
-      (id, trainer_id, starts_at, duration_minutes)
-    VALUES
-      (${randomUUID()}, ${trainer.id}, ${startsAt.toISOString()}, ${duration})
-    ON CONFLICT (trainer_id, starts_at) DO UPDATE
-      SET is_active = EXCLUDED.is_active
-    RETURNING id, is_active
-  `;
-
-  if (!slot.is_active) {
-    return Response.json({ error: "That session time is no longer available." }, { status: 409 });
-  }
-
   const [booking] = await sql`
+    WITH claimed_slot AS (
+      UPDATE public.availability_slots
+      SET is_active = false
+      WHERE trainer_id = ${trainer.id}
+        AND starts_at = ${startsAt.toISOString()}
+        AND starts_at >= NOW() + INTERVAL '12 hours'
+        AND starts_at <= NOW() + INTERVAL '60 days'
+        AND is_active = true
+      RETURNING id, trainer_id, starts_at, duration_minutes
+    )
     INSERT INTO public.bookings
       (id, slot_id, trainer_id, client_id, starts_at, duration_minutes)
-    VALUES
-      (${randomUUID()}, ${slot.id}, ${trainer.id}, ${session.user.id},
-       ${startsAt.toISOString()}, ${duration})
+    SELECT ${randomUUID()}, id, trainer_id, ${session.user.id}, starts_at, duration_minutes
+    FROM claimed_slot
     RETURNING id, slot_id, trainer_id, client_id, starts_at, duration_minutes, status
   `;
 
-  await sql`
-    UPDATE public.availability_slots
-    SET is_active = false
-    WHERE id = ${slot.id}
-  `;
+  if (!booking) {
+    return Response.json({ error: "That session time is no longer available. Choose another time." }, { status: 409 });
+  }
 
   await sql`
     INSERT INTO public.in_app_notices

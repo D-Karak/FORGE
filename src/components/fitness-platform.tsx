@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import AuthForm, { SessionControl } from "@/components/auth-form";
+import AuthForm, { SessionControl, type AuthenticationResult } from "@/components/auth-form";
 import LiveBookings from "@/components/live-bookings";
 import { authClient } from "@/lib/auth/client";
 
@@ -29,6 +29,23 @@ type BookableTrainer = {
   city: string;
   specialty: string;
   price: number;
+};
+
+function getAuthenticationDestination(account: AuthenticationResult, next?: string | null) {
+  const bookingDestination = next?.startsWith("/book-session/") ? next : null;
+  if (account.needsProfileSetup) {
+    return bookingDestination ? `/profile-setup?next=${encodeURIComponent(bookingDestination)}` : "/profile-setup";
+  }
+  if (account.role === "trainer") {
+    return account.trainerSetupRequired ? "/trainer/apply" : "/trainer/dashboard";
+  }
+  return bookingDestination ?? "/dashboard";
+}
+
+type CoachAvailabilitySlot = {
+  id: string;
+  starts_at: string;
+  duration_minutes: number;
 };
 
 type Program = {
@@ -746,12 +763,12 @@ function AccountTypePicker({
   value,
   onChange,
 }: {
-  value: "client" | "trainer";
+  value: "client" | "trainer" | null;
   onChange: (value: "client" | "trainer") => void;
 }) {
   return (
     <div className="role-picker">
-      <p className="role-picker-label">CONTINUE AS</p>
+      <p className="role-picker-label">CHOOSE YOUR PROFILE TYPE</p>
       <div className="role-picker-options" role="group" aria-label="Choose account type">
         <button type="button" className={value === "client" ? "role-option role-option-active" : "role-option"} aria-pressed={value === "client"} onClick={() => onChange("client")}>
           <span className="role-option-mark">C</span>
@@ -764,6 +781,144 @@ function AccountTypePicker({
           <span className="role-option-check"><Icon name="check" size={12} /></span>
         </button>
       </div>
+    </div>
+  );
+}
+
+function ProfileSetupPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const [pageState, setPageState] = useState<"checking" | "ready" | "saving" | "error">("checking");
+  const [role, setRole] = useState<"client" | "trainer" | null>(null);
+  const [displayName, setDisplayName] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
+  const [retry, setRetry] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+
+    async function checkProfile() {
+      try {
+        const { data: session, error: sessionError } = await authClient.getSession();
+        if (sessionError) throw new Error(sessionError.message ?? "Could not check your account.");
+        if (!session?.user) {
+          router.replace("/login");
+          return;
+        }
+
+        const response = await fetch("/api/profile");
+        const result = await response.json() as {
+          error?: unknown;
+          profile?: { role?: unknown };
+          trainerSetupRequired?: unknown;
+        };
+
+        if (response.status === 404) {
+          if (!active) return;
+          setDisplayName(session.user.name ?? "");
+          setPageState("ready");
+          return;
+        }
+        if (!response.ok) {
+          throw new Error(typeof result.error === "string" ? result.error : "Could not check your profile.");
+        }
+        if (result.profile?.role !== "client" && result.profile?.role !== "trainer") {
+          throw new Error("The server returned an invalid account profile.");
+        }
+        if (typeof result.trainerSetupRequired !== "boolean") {
+          throw new Error("The server returned an invalid coach setup status.");
+        }
+
+        router.replace(getAuthenticationDestination({
+          needsProfileSetup: false,
+          role: result.profile.role,
+          trainerSetupRequired: result.trainerSetupRequired,
+        }, searchParams.get("next")));
+      } catch (error) {
+        if (!active) return;
+        setErrorMessage(error instanceof Error ? error.message : "Could not check your profile.");
+        setPageState("error");
+      }
+    }
+
+    void checkProfile();
+    return () => {
+      active = false;
+    };
+  }, [retry, router, searchParams]);
+
+  async function createProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!role) {
+      setErrorMessage("Choose whether you’re joining as a client or a coach.");
+      return;
+    }
+
+    setPageState("saving");
+    setErrorMessage("");
+    try {
+      const response = await fetch("/api/profile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role, displayName: displayName.trim() }),
+      });
+      const result = await response.json() as {
+        error?: unknown;
+        profile?: { role?: unknown };
+        trainerSetupRequired?: unknown;
+      };
+      if (!response.ok) {
+        throw new Error(typeof result.error === "string" ? result.error : "Could not create your profile.");
+      }
+      if (result.profile?.role !== role) {
+        throw new Error(`This login already has a ${String(result.profile?.role ?? "different")} profile. Switch accounts to create a separate profile.`);
+      }
+      if (typeof result.trainerSetupRequired !== "boolean") {
+        throw new Error("The server returned an invalid coach setup status.");
+      }
+
+      router.replace(getAuthenticationDestination({
+        needsProfileSetup: false,
+        role,
+        trainerSetupRequired: result.trainerSetupRequired,
+      }, searchParams.get("next")));
+      router.refresh();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not create your profile.");
+      setPageState("ready");
+    }
+  }
+
+  return (
+    <div className="profile-setup-page login-page">
+      {pageState === "checking" ? (
+        <p className="coach-search-message" role="status">Checking your account…</p>
+      ) : pageState === "error" ? (
+        <section className="profile-setup-error" role="alert">
+          <p className="eyebrow"><span /> PROFILE SETUP</p>
+          <h1>ONE MORE<br /><em>STEP.</em></h1>
+          <p>{errorMessage}</p>
+          <button className="button button-outline" type="button" onClick={() => { setErrorMessage(""); setPageState("checking"); setRetry((current) => current + 1); }}>TRY AGAIN <Icon name="arrow" size={14} /></button>
+        </section>
+      ) : (
+        <>
+          <p className="eyebrow"><span /> YOUR FORGE PROFILE · 01 / 01</p>
+          <h1>FIND YOUR<br /><em>PLACE.</em></h1>
+          <p>Tell us how you’ll use Forge. We’ll shape your account around the way you want to train or coach.</p>
+          <form className="profile-setup-form" onSubmit={createProfile}>
+            <AccountTypePicker value={role} onChange={(value) => { setRole(value); setErrorMessage(""); }} />
+            <label>
+              Your name
+              <input autoComplete="name" maxLength={100} onChange={(event) => setDisplayName(event.target.value)} required value={displayName} />
+            </label>
+            {errorMessage && <p className="auth-error" role="alert">{errorMessage}</p>}
+            <button className="button button-red button-full" disabled={pageState === "saving"} type="submit">
+              {pageState === "saving" ? "SAVING PROFILE…" : role === "trainer" ? "CONTINUE TO COACH PROFILE" : "CREATE CLIENT PROFILE"}
+              <Icon name="arrow" size={15} />
+            </button>
+          </form>
+        </>
+      )}
     </div>
   );
 }
@@ -793,10 +948,6 @@ const initialMessagesByConversation: Record<number, typeof initialMessages> = {
     { sender: "Kabir Rao", text: "You’ve built a strong base. Let’s add a little distance next week.", time: "Yesterday" },
   ],
 };
-
-function formatBookingDate(date: Date) {
-  return new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric" }).format(date);
-}
 
 const appNavigation = [
   { label: "Overview", href: "/dashboard", icon: "grid" as const },
@@ -873,7 +1024,8 @@ function DashboardShell({
 export default function FitnessPlatform() {
   const pathname = usePathname() || "/";
   const router = useRouter();
-  const [dialog, setDialog] = useState<"signin" | "booking" | "purchase" | "program-editor" | null>(null);
+  const searchParams = useSearchParams();
+  const [dialog, setDialog] = useState<"signin" | "purchase" | "program-editor" | null>(null);
   const [toast, setToast] = useState("");
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("All");
@@ -881,21 +1033,16 @@ export default function FitnessPlatform() {
   const [activeConversation, setActiveConversation] = useState(0);
   const [messageText, setMessageText] = useState("");
   const [messagesByConversation, setMessagesByConversation] = useState(initialMessagesByConversation);
-  const [selectedSlot, setSelectedSlot] = useState("5:30 PM");
-  const [selectedDate, setSelectedDate] = useState(new Date(2026, 10, 19));
   const [availableTrainers, setAvailableTrainers] = useState<BookableTrainer[]>([]);
-  const [bookingTrainerSlug, setBookingTrainerSlug] = useState("");
+  const [featuredTrainerSlugs, setFeaturedTrainerSlugs] = useState<string[]>([]);
   const [availableTrainersLoading, setAvailableTrainersLoading] = useState(true);
   const [availableTrainersError, setAvailableTrainersError] = useState("");
   const [availableTrainersRetry, setAvailableTrainersRetry] = useState(0);
   const [maxPrice, setMaxPrice] = useState(5000);
-  const [accountRole, setAccountRole] = useState<"client" | "trainer">("client");
   const [filterOpen, setFilterOpen] = useState(false);
   const [favoriteIds, setFavoriteIds] = useState<string[]>([]);
   const [approved, setApproved] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState("Overview");
-  const [calendarDay, setCalendarDay] = useState(19);
-  const [bookingMonth, setBookingMonth] = useState(new Date(2026, 10, 1));
   const [notificationOpen, setNotificationOpen] = useState(false);
   const [playerRequest, setPlayerRequest] = useState<{ programId: string; lessonIndex: number; preview: boolean } | null>(null);
   const [callRequest, setCallRequest] = useState<CoachingCallRequest | null>(null);
@@ -913,43 +1060,18 @@ export default function FitnessPlatform() {
     program.price <= maxPrice &&
     `${program.title} ${program.trainer} ${program.category}`.toLowerCase().includes(search.toLowerCase()),
   ), [category, maxPrice, search]);
-  const bookingMonthYear = bookingMonth.getFullYear();
-  const bookingMonthIndex = bookingMonth.getMonth();
-  const bookingMonthOffset = (new Date(bookingMonthYear, bookingMonthIndex, 1).getDay() + 6) % 7;
-  const bookingMonthDayCount = new Date(bookingMonthYear, bookingMonthIndex + 1, 0).getDate();
-  const bookingCalendarCellCount = Math.ceil((bookingMonthOffset + bookingMonthDayCount) / 7) * 7;
-  const bookingCalendarDates = Array.from({ length: bookingCalendarCellCount }, (_, index) => {
-    const day = index - bookingMonthOffset + 1;
-    return day > 0 && day <= bookingMonthDayCount ? new Date(bookingMonthYear, bookingMonthIndex, day) : null;
-  });
-  const firstAvailableBookingDate = new Date();
-  firstAvailableBookingDate.setHours(0, 0, 0, 0);
-  firstAvailableBookingDate.setDate(firstAvailableBookingDate.getDate() + 1);
-  const lastAvailableBookingDate = new Date();
-  lastAvailableBookingDate.setHours(23, 59, 59, 999);
-  lastAvailableBookingDate.setDate(lastAvailableBookingDate.getDate() + 60);
-  const selectedBookingTrainer = availableTrainers.find((trainer) => trainer.slug === bookingTrainerSlug) ?? null;
-  const canGoToPreviousBookingMonth =
-    bookingMonthYear > firstAvailableBookingDate.getFullYear() ||
-    (bookingMonthYear === firstAvailableBookingDate.getFullYear() && bookingMonthIndex > firstAvailableBookingDate.getMonth());
-  const canGoToNextBookingMonth =
-    bookingMonthYear < lastAvailableBookingDate.getFullYear() ||
-    (bookingMonthYear === lastAvailableBookingDate.getFullYear() && bookingMonthIndex < lastAvailableBookingDate.getMonth());
-
   function notify(message: string) {
     setToast(message);
     window.setTimeout(() => setToast(""), 2800);
   }
 
   function openBooking(trainerSlug?: string) {
-    const firstDate = new Date();
-    firstDate.setHours(0, 0, 0, 0);
-    firstDate.setDate(firstDate.getDate() + 1);
-    setSelectedDate(firstDate);
-    setBookingMonth(new Date(firstDate.getFullYear(), firstDate.getMonth(), 1));
-    setSelectedSlot("5:30 PM");
-    setBookingTrainerSlug(trainerSlug ?? "");
-    setDialog("booking");
+    if (!trainerSlug) {
+      router.push("/trainers");
+      return;
+    }
+
+    router.push(`/book-session/${encodeURIComponent(trainerSlug)}`);
   }
 
   useEffect(() => {
@@ -994,7 +1116,13 @@ export default function FitnessPlatform() {
 
         if (!active) return;
 
+        const shuffled = [...coaches];
+        for (let index = shuffled.length - 1; index > 0; index -= 1) {
+          const swapIndex = Math.floor(Math.random() * (index + 1));
+          [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+        }
         setAvailableTrainers(coaches);
+        setFeaturedTrainerSlugs(shuffled.slice(0, 4).map((trainer) => trainer.slug));
         setAvailableTrainersError("");
       })
       .catch((error: unknown) => {
@@ -1024,49 +1152,6 @@ export default function FitnessPlatform() {
       [activeConversation]: [...current[activeConversation], { sender: "You", text, time: "Now" }],
     }));
     setMessageText("");
-  }
-
-  async function confirmBooking() {
-    if (!selectedBookingTrainer) {
-      notify("Choose a coach before requesting a session.");
-      return;
-    }
-
-    const timeMatch = selectedSlot.match(/(\d+):(\d+)\s*(AM|PM)/i);
-    if (!timeMatch) {
-      notify("Choose a valid session time");
-      return;
-    }
-
-    let hours = Number(timeMatch[1]);
-    const minutes = Number(timeMatch[2]);
-    const meridiem = timeMatch[3].toUpperCase();
-    if (meridiem === "PM" && hours !== 12) hours += 12;
-    if (meridiem === "AM" && hours === 12) hours = 0;
-
-    const startsAt = new Date(selectedDate);
-    startsAt.setHours(hours, minutes, 0, 0);
-
-    try {
-      const response = await fetch("/api/bookings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          trainerSlug: selectedBookingTrainer.slug,
-          startsAt: startsAt.toISOString(),
-          durationMinutes: 50,
-        }),
-      });
-      const result = await response.json() as { error?: string };
-      if (!response.ok) {
-        throw new Error(result.error ?? "Could not book this session.");
-      }
-
-      setDialog(null);
-      notify(`Session with ${selectedBookingTrainer.name} requested for ${formatBookingDate(selectedDate)} at ${selectedSlot}.`);
-    } catch (error) {
-      notify(error instanceof Error ? error.message : "Could not book this session.");
-    }
   }
 
   function confirmPurchase() {
@@ -1105,12 +1190,15 @@ export default function FitnessPlatform() {
   }
 
   const isPublicProfile = pathname.startsWith("/trainers/");
+  const isCoachBookingPage = pathname.startsWith("/book-session/");
+  const bookingTrainerSlug = isCoachBookingPage ? pathname.slice("/book-session/".length) : "";
+  const isProfileSetup = pathname === "/profile-setup";
   const isTrainerApplication = pathname === "/trainer/apply";
   const isTrainerMode = pathname.startsWith("/trainer/") && !isTrainerApplication;
   const isAdminMode = pathname.startsWith("/admin");
   const isDashboard = pathname.startsWith("/dashboard") || pathname.startsWith("/my-learning") || pathname.startsWith("/bookings") || pathname.startsWith("/messages") || pathname.startsWith("/settings") || isTrainerMode || isAdminMode;
   const isProgramDetail = pathname.startsWith("/programs/") && pathname !== "/programs";
-  const publicScreen = pathname === "/" || pathname === "/discover" || pathname === "/programs" || isPublicProfile || isProgramDetail || pathname === "/login" || isTrainerApplication;
+  const publicScreen = pathname === "/" || pathname === "/discover" || pathname === "/trainers" || pathname === "/programs" || isPublicProfile || isCoachBookingPage || isProgramDetail || pathname === "/login" || isProfileSetup || isTrainerApplication;
 
   return (
     <>
@@ -1204,6 +1292,36 @@ export default function FitnessPlatform() {
             </div>
           )}
 
+          {pathname === "/trainers" && (
+            <CoachDirectoryPage
+              trainers={availableTrainers}
+              loading={availableTrainersLoading}
+              error={availableTrainersError}
+              onRetry={() => {
+                setAvailableTrainersLoading(true);
+                setAvailableTrainersError("");
+                setAvailableTrainersRetry((current) => current + 1);
+              }}
+              onBook={openBooking}
+            />
+          )}
+
+          {isCoachBookingPage && (
+            <CoachBookingPage
+              key={bookingTrainerSlug}
+              trainerSlug={decodeURIComponent(bookingTrainerSlug)}
+              trainers={availableTrainers}
+              trainersLoading={availableTrainersLoading}
+              trainersError={availableTrainersError}
+              onRetryTrainers={() => {
+                setAvailableTrainersLoading(true);
+                setAvailableTrainersError("");
+                setAvailableTrainersRetry((current) => current + 1);
+              }}
+              onSignIn={() => router.push(`/login?next=${encodeURIComponent(`/book-session/${bookingTrainerSlug}`)}`)}
+            />
+          )}
+
           {pathname === "/programs" && (
             <div className="catalog-page">
               <div className="catalog-hero programs-catalog-hero"><p className="eyebrow"><span /> A PLAN THAT FITS YOUR LIFE</p><h1>PROGRAMS<br />FOR THE <em>LONG GAME.</em></h1><p>Coach-built plans, thoughtful video lessons, and space to make progress your own.</p></div>
@@ -1214,6 +1332,8 @@ export default function FitnessPlatform() {
               <Footer />
             </div>
           )}
+
+          {isProfileSetup && <ProfileSetupPage />}
 
           {isPublicProfile && (
             <div className="detail-page">
@@ -1244,7 +1364,7 @@ export default function FitnessPlatform() {
           )}
 
           {isTrainerApplication && <TrainerApplicationPage notify={notify} />}
-          {pathname === "/login" && <div className="login-page"><p className="eyebrow"><span /> YOUR NEXT CHAPTER</p><h1>GOOD TO HAVE<br /><em>YOU HERE.</em></h1><p>Sign in or create an account to find your people and keep your progress moving.</p><AccountTypePicker value={accountRole} onChange={setAccountRole} /><AuthForm role={accountRole} onAuthenticated={(role, needsSetup) => router.push(role === "trainer" ? needsSetup ? "/trainer/apply" : "/trainer/dashboard" : "/dashboard")} /><small>By continuing, you agree to our Terms and Privacy Policy.</small></div>}
+          {pathname === "/login" && <div className="login-page"><p className="eyebrow"><span /> YOUR NEXT CHAPTER</p><h1>GOOD TO HAVE<br /><em>YOU HERE.</em></h1><p>Sign in or create an account to find your people and keep your progress moving.</p><AuthForm next={searchParams.get("next")} onAuthenticated={(account) => router.push(getAuthenticationDestination(account, searchParams.get("next")))} /><small>By continuing, you agree to our Terms and Privacy Policy.</small></div>}
         </main>
       )}
 
@@ -1253,6 +1373,7 @@ export default function FitnessPlatform() {
           {pathname === "/dashboard" && (
             <ClientDashboard
               trainers={availableTrainers}
+              featuredSlugs={featuredTrainerSlugs}
               trainersLoading={availableTrainersLoading}
               trainersError={availableTrainersError}
               onRetryTrainers={() => {
@@ -1272,7 +1393,7 @@ export default function FitnessPlatform() {
           {pathname === "/trainer/dashboard" && <TrainerDashboard onCreate={() => setDialog("program-editor")} onStartSession={startCoachCall} />}
           {pathname === "/trainer/programs" && <TrainerPrograms onCreate={() => setDialog("program-editor")} />}
           {pathname === "/trainer/clients" && <TrainerClients />}
-          {pathname === "/trainer/availability" && <AvailabilityPage day={calendarDay} setDay={setCalendarDay} notify={notify} />}
+          {pathname === "/trainer/availability" && <AvailabilityPage notify={notify} />}
           {pathname === "/trainer/earnings" && <EarningsPage />}
           {isAdminMode && <AdminPage approved={approved} setApproved={setApproved} notify={notify} />}
         </DashboardShell>
@@ -1281,58 +1402,7 @@ export default function FitnessPlatform() {
       {playerRequest && <VideoLessonPlayer program={programs.find((program) => program.id === playerRequest.programId) ?? programs[0]} initialLessonIndex={playerRequest.lessonIndex} preview={playerRequest.preview} onClose={() => setPlayerRequest(null)} />}
       {callRequest && <CoachingCallModal request={callRequest} onClose={() => setCallRequest(null)} notify={notify} />}
 
-      {dialog === "signin" && <Modal title="Sign in to Forge" onClose={() => setDialog(null)}><div className="auth-modal"><Brand inverse /><p className="eyebrow"><span /> YOUR TRAINING, YOUR TERMS</p><h2>LET’S GET<br /><em>STARTED.</em></h2><p>Sign in or create an account. Your next step is closer than you think.</p><AccountTypePicker value={accountRole} onChange={setAccountRole} /><AuthForm role={accountRole} onAuthenticated={(role, needsSetup) => { setDialog(null); router.push(role === "trainer" ? needsSetup ? "/trainer/apply" : "/trainer/dashboard" : "/dashboard"); }} /><small>By continuing, you agree to our Terms and Privacy Policy.</small></div></Modal>}
-      {dialog === "booking" && (
-        <Modal title="Book a coaching session" onClose={() => setDialog(null)} wide>
-          <div className="booking-modal">
-            <div className="booking-modal-intro">
-              <p className="eyebrow"><span /> YOUR FIRST SESSION</p>
-              <h2>LET’S FIND<br /><em>YOUR TIME.</em></h2>
-              <p>{selectedBookingTrainer ? `Online coaching with ${selectedBookingTrainer.name}. Pick a date and a time that works for you.` : "Choose a coach from your dashboard to start booking."}</p>
-              {selectedBookingTrainer && (
-                <div className="booking-coach">
-                  <span className="booking-coach-initials" aria-hidden="true">{selectedBookingTrainer.name.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span>
-                  <span><b>{selectedBookingTrainer.name}</b><small>50 min · Online · ₹{selectedBookingTrainer.price.toLocaleString("en-IN")}</small></span>
-                </div>
-              )}
-              {!selectedBookingTrainer && <Link className="text-link booking-find-coach" href="/dashboard#available-coaches" onClick={() => setDialog(null)}>FIND A COACH <Icon name="arrow" size={13} /></Link>}
-            </div>
-            <div className="booking-picker">
-              <div className="picker-heading">
-                <button type="button" aria-label="Previous month" disabled={!canGoToPreviousBookingMonth} onClick={() => setBookingMonth((month) => new Date(month.getFullYear(), month.getMonth() - 1, 1))}>‹</button>
-                <b>{bookingMonth.toLocaleDateString("en-US", { month: "long", year: "numeric" }).toUpperCase()}</b>
-                <button type="button" aria-label="Next month" disabled={!canGoToNextBookingMonth} onClick={() => setBookingMonth((month) => new Date(month.getFullYear(), month.getMonth() + 1, 1))}>›</button>
-              </div>
-              <div className="date-grid" aria-label="Choose a session date">
-                {["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map((day, index) => (
-                  <span className="date-day" aria-label={day} key={day}>{["M", "T", "W", "T", "F", "S", "S"][index]}</span>
-                ))}
-                {bookingCalendarDates.map((date, index) => date ? (
-                  <button
-                    type="button"
-                    key={`${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`}
-                    disabled={date < firstAvailableBookingDate || date > lastAvailableBookingDate}
-                    className={selectedDate.getTime() === date.getTime() ? "date-selected" : ""}
-                    aria-label={date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
-                    aria-pressed={selectedDate.getTime() === date.getTime()}
-                    onClick={() => setSelectedDate(date)}
-                  >
-                    {date.getDate()}
-                  </button>
-                ) : <span className="calendar-empty" aria-hidden="true" key={`empty-${index}`} />)}
-              </div>
-              <p className="slot-label">AVAILABLE TIMES · {formatBookingDate(selectedDate).toUpperCase()} · IST</p>
-              <div className="slot-grid">
-                {["10:00 AM", "12:30 PM", "3:00 PM", "5:30 PM"].map((slot) => (
-                  <button type="button" key={slot} className={selectedSlot === slot ? "slot-selected" : ""} aria-pressed={selectedSlot === slot} onClick={() => setSelectedSlot(slot)}>{slot}</button>
-                ))}
-              </div>
-              <button className="button button-red button-full" disabled={!selectedBookingTrainer} onClick={confirmBooking}>REQUEST SESSION <Icon name="arrow" size={15} /></button>
-              <small className="booking-fineprint">Demo only — this preview doesn’t create a booking or process payment.</small>
-            </div>
-          </div>
-        </Modal>
-      )}
+      {dialog === "signin" && <Modal title="Sign in to Forge" onClose={() => setDialog(null)}><div className="auth-modal"><Brand inverse /><p className="eyebrow"><span /> YOUR TRAINING, YOUR TERMS</p><h2>LET’S GET<br /><em>STARTED.</em></h2><p>Sign in or create an account. Your next step is closer than you think.</p><AuthForm onAuthenticated={(account) => { setDialog(null); router.push(getAuthenticationDestination(account)); }} /><small>By continuing, you agree to our Terms and Privacy Policy.</small></div></Modal>}
       {dialog === "purchase" && <Modal title="Get program access" onClose={() => setDialog(null)}><div className="purchase-modal"><p className="eyebrow"><span /> ONE PAYMENT. YOURS TO KEEP.</p><h2>READY TO<br /><em>GET STRONGER?</em></h2><div className="purchase-line" style={{ backgroundImage: `url("${selectedProgram.image}")` }} /><div className="purchase-row"><span>{selectedProgram.title}<small>{selectedProgram.weeks} weeks · {selectedProgram.lessons} video lessons</small></span><b>₹{selectedProgram.price.toLocaleString("en-IN")}</b></div><div className="purchase-row purchase-total"><span>Total today</span><b>₹{selectedProgram.price.toLocaleString("en-IN")}</b></div><button className="button button-red button-full" onClick={confirmPurchase}>CONTINUE TO SECURE CHECKOUT <Icon name="arrow" size={15} /></button><small>Demo only — no payment will be processed.</small></div></Modal>}
       {dialog === "program-editor" && <ProgramEditorModal onClose={() => setDialog(null)} onSave={() => { setDialog(null); notify("Draft saved in this preview"); }} notify={notify} />}
       {toast && <div className="toast-message"><Icon name="check" size={16} />{toast}</div>}
@@ -1498,10 +1568,16 @@ function TrainerApplicationPage({ notify }: { notify: (message: string) => void 
           <h2>FIRST, LET’S<br /><em>GET YOU IN.</em></h2>
           <p className="application-help">Create or sign in to a dedicated coach account. Once you’re in, you can build your profile here.</p>
           <AuthForm
-            role="trainer"
-            onAuthenticated={(role, needsSetup) => {
-              if (role === "trainer" && needsSetup) setRefreshKey((current) => current + 1);
-              else if (role === "trainer") router.replace("/trainer/dashboard");
+            onAuthenticated={(account) => {
+              if (account.needsProfileSetup) {
+                router.replace("/profile-setup");
+              } else if (account.role === "trainer" && account.trainerSetupRequired) {
+                setRefreshKey((current) => current + 1);
+              } else if (account.role === "trainer") {
+                router.replace("/trainer/dashboard");
+              } else {
+                setPageMessage("This login belongs to a client account. Switch accounts to continue with a separate coach account.");
+              }
             }}
           />
         </div>
@@ -1541,6 +1617,7 @@ function TrainerApplicationPage({ notify }: { notify: (message: string) => void 
 
 function ClientDashboard({
   trainers: coaches,
+  featuredSlugs,
   trainersLoading: coachesLoading,
   trainersError: coachesError,
   onRetryTrainers,
@@ -1549,6 +1626,7 @@ function ClientDashboard({
   onProgram,
 }: {
   trainers: BookableTrainer[];
+  featuredSlugs: string[];
   trainersLoading: boolean;
   trainersError: string;
   onRetryTrainers: () => void;
@@ -1557,11 +1635,13 @@ function ClientDashboard({
   onProgram: (id: string) => void;
 }) {
   const [coachSearch, setCoachSearch] = useState("");
+  const searchQuery = coachSearch.trim().toLowerCase();
   const matchingTrainers = coaches.filter((trainer) =>
-    `${trainer.name} ${trainer.title} ${trainer.specialty} ${trainer.city}`
-      .toLowerCase()
-      .includes(coachSearch.trim().toLowerCase()),
+    `${trainer.name} ${trainer.title} ${trainer.specialty} ${trainer.city}`.toLowerCase().includes(searchQuery),
   );
+  const displayedTrainers = searchQuery
+    ? matchingTrainers
+    : coaches.filter((trainer) => featuredSlugs.includes(trainer.slug));
 
   return (
     <div className="dashboard-content">
@@ -1592,39 +1672,17 @@ function ClientDashboard({
           </div>
         ) : coaches.length === 0 ? (
           <p className="coach-search-message" role="status">No approved coaches are available just yet. Check back soon.</p>
-        ) : matchingTrainers.length === 0 ? (
+        ) : !searchQuery && featuredSlugs.length === 0 ? (
+          <p className="coach-search-message" role="status">Picking a few coaches for you…</p>
+        ) : displayedTrainers.length === 0 ? (
           <p className="coach-search-message" role="status">No coaches match “{coachSearch}”. Try another name or skill.</p>
         ) : (
           <div className="available-coaches-grid">
-            {matchingTrainers.map((trainer) => {
-              const knownTrainer = trainers.find((item) => item.id === trainer.slug);
-              const initials = trainer.name.split(" ").map((part) => part[0]).slice(0, 2).join("");
-              return (
-                <button
-                  type="button"
-                  className="available-coach-card"
-                  key={trainer.slug}
-                  onClick={() => onBookTrainer(trainer.slug)}
-                  aria-label={`Book a session with ${trainer.name}, ${trainer.specialty}, ₹${trainer.price} per session`}
-                >
-                  <span
-                    className={`available-coach-art${knownTrainer ? " available-coach-art-photo" : ""}`}
-                    style={knownTrainer ? { backgroundImage: `linear-gradient(180deg,transparent 35%,rgba(0,0,0,.7)),url("${knownTrainer.image}")` } : undefined}
-                  >
-                    <span className="coach-specialty">{trainer.specialty}</span>
-                    {!knownTrainer && <b className="available-coach-initials">{initials}</b>}
-                    <span className="verified-mark" title="Verified coach"><Icon name="check" size={12} /></span>
-                  </span>
-                  <span className="available-coach-details">
-                    <span className="available-coach-heading"><b>{trainer.name}</b><span>₹{trainer.price.toLocaleString("en-IN")}<small> / session</small></span></span>
-                    <span className="available-coach-title">{trainer.title}</span>
-                    <span className="available-coach-location"><Icon name="pin" size={12} />{trainer.city}</span>
-                    <span className="available-coach-cta">BOOK A SESSION <Icon name="arrow" size={13} /></span>
-                  </span>
-                </button>
-              );
-            })}
+            {displayedTrainers.map((trainer) => <BookableCoachCard key={trainer.slug} trainer={trainer} onBook={onBookTrainer} />)}
           </div>
+        )}
+        {!coachesLoading && !coachesError && coaches.length > 0 && (
+          <Link className="available-coaches-more" href="/trainers">MORE COACHES <Icon name="arrow" size={14} /></Link>
         )}
       </section>
       <div className="dashboard-section-heading"><div><p className="eyebrow"><span /> PICK UP WHERE YOU LEFT OFF</p><h2>Your programs</h2></div><Link className="text-link" href="/my-learning">MY LIBRARY <Icon name="arrow" size={14} /></Link></div>
@@ -1647,6 +1705,318 @@ function ClientDashboard({
         })}
       </div>
       <div className="dashboard-bottom-grid"><section className="dashboard-panel"><div className="panel-heading"><h3>UP NEXT</h3><Link href="/bookings">ALL BOOKINGS <Icon name="arrow" size={13} /></Link></div><div className="up-next-row"><div className="date-block"><b>19</b><span>NOV</span></div><div><b>1:1 Strength coaching</b><small>Arjun Mehta · 5:30 PM · Online</small></div><span className="status-pill">CONFIRMED</span></div></section><section className="dashboard-panel quote-panel"><Icon name="spark" size={18} /><p>“The goal isn’t to be perfect. It’s to keep coming back.”</p><small>A NOTE FOR YOUR WEEK</small></section></div>
+    </div>
+  );
+}
+
+function BookableCoachCard({ trainer, onBook }: { trainer: BookableTrainer; onBook: (slug: string) => void }) {
+  const knownTrainer = trainers.find((item) => item.id === trainer.slug);
+  const initials = trainer.name.split(" ").map((part) => part[0]).slice(0, 2).join("");
+
+  return (
+    <button
+      type="button"
+      className="available-coach-card"
+      onClick={() => onBook(trainer.slug)}
+      aria-label={`Check availability with ${trainer.name}, ${trainer.specialty}, ₹${trainer.price} per session`}
+    >
+      <span
+        className={`available-coach-art${knownTrainer ? " available-coach-art-photo" : ""}`}
+        style={knownTrainer ? { backgroundImage: `linear-gradient(180deg,transparent 35%,rgba(0,0,0,.7)),url("${knownTrainer.image}")` } : undefined}
+      >
+        <span className="coach-specialty">{trainer.specialty}</span>
+        {!knownTrainer && <b className="available-coach-initials">{initials}</b>}
+        <span className="verified-mark" title="Verified coach"><Icon name="check" size={12} /></span>
+      </span>
+      <span className="available-coach-details">
+        <span className="available-coach-heading"><b>{trainer.name}</b><span>₹{trainer.price.toLocaleString("en-IN")}<small> / session</small></span></span>
+        <span className="available-coach-title">{trainer.title}</span>
+        <span className="available-coach-location"><Icon name="pin" size={12} />{trainer.city}</span>
+        <span className="available-coach-cta">CHECK AVAILABILITY <Icon name="arrow" size={13} /></span>
+      </span>
+    </button>
+  );
+}
+
+function CoachDirectoryPage({
+  trainers: coaches,
+  loading,
+  error,
+  onRetry,
+  onBook,
+}: {
+  trainers: BookableTrainer[];
+  loading: boolean;
+  error: string;
+  onRetry: () => void;
+  onBook: (slug: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const normalizedQuery = query.trim().toLowerCase();
+  const matchingCoaches = coaches.filter((coach) =>
+    `${coach.name} ${coach.title} ${coach.specialty} ${coach.city}`.toLowerCase().includes(normalizedQuery),
+  );
+
+  return (
+    <div className="coach-directory-page">
+      <Link className="coach-directory-back" href="/dashboard"><Icon name="arrow" size={14} /> BACK TO DASHBOARD</Link>
+      <header className="coach-directory-heading">
+        <div><p className="eyebrow"><span /> FIND YOUR PERSON</p><h1>MEET YOUR<br /><em>COACH.</em></h1></div>
+        <p>Every coach has a different way of helping you move forward. Find the right fit, then choose a time that works.</p>
+      </header>
+      <label className="search-field coach-directory-search">
+        <Icon name="search" size={18} />
+        <input aria-label="Search all coaches by name or expertise" onChange={(event) => setQuery(event.target.value)} placeholder="Search a name or skill — try boxing" type="search" value={query} />
+      </label>
+      {loading ? (
+        <p className="coach-search-message" role="status">Finding available coaches…</p>
+      ) : error ? (
+        <div className="coach-search-message coach-search-error" role="alert"><span>{error}</span><button type="button" className="text-link" onClick={onRetry}>TRY AGAIN <Icon name="arrow" size={13} /></button></div>
+      ) : matchingCoaches.length === 0 ? (
+        <p className="coach-search-message" role="status">{coaches.length === 0 ? "No approved coaches are available just yet. Check back soon." : `No coaches match “${query}”. Try another name or skill.`}</p>
+      ) : (
+        <>
+          <div className="coach-directory-result"><b>{matchingCoaches.length}</b> {matchingCoaches.length === 1 ? "coach" : "coaches"} to explore</div>
+          <div className="available-coaches-grid coach-directory-grid">
+            {matchingCoaches.map((coach) => <BookableCoachCard key={coach.slug} trainer={coach} onBook={onBook} />)}
+          </div>
+        </>
+      )}
+      <Footer />
+    </div>
+  );
+}
+
+function indiaDateKey(dateValue: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(dateValue));
+  const part = (type: string) => parts.find((item) => item.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+function indiaSlotStartAt(date: Date, time: string) {
+  const match = time.match(/(\d+):(\d+)\s*(AM|PM)/i);
+  if (!match) return null;
+
+  let hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (match[3].toUpperCase() === "PM" && hours !== 12) hours += 12;
+  if (match[3].toUpperCase() === "AM" && hours === 12) hours = 0;
+
+  return new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate(), hours - 5, minutes - 30));
+}
+
+function isBookableSlot(date: Date, time: string, now = Date.now()) {
+  const startsAt = indiaSlotStartAt(date, time)?.getTime();
+  return startsAt !== undefined && startsAt >= now + 12 * 60 * 60 * 1000 && startsAt <= now + 60 * 24 * 60 * 60 * 1000;
+}
+
+function CoachBookingPage({
+  trainerSlug,
+  trainers: coaches,
+  trainersLoading,
+  trainersError,
+  onRetryTrainers,
+  onSignIn,
+}: {
+  trainerSlug: string;
+  trainers: BookableTrainer[];
+  trainersLoading: boolean;
+  trainersError: string;
+  onRetryTrainers: () => void;
+  onSignIn: () => void;
+}) {
+  const [slots, setSlots] = useState<CoachAvailabilitySlot[]>([]);
+  const [slotsLoading, setSlotsLoading] = useState(true);
+  const [slotsError, setSlotsError] = useState("");
+  const [slotRetry, setSlotRetry] = useState(0);
+  const [selectedDate, setSelectedDate] = useState("");
+  const [selectedSlotId, setSelectedSlotId] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [bookingError, setBookingError] = useState("");
+  const [needsSignIn, setNeedsSignIn] = useState(false);
+  const [bookingConfirmation, setBookingConfirmation] = useState<CoachAvailabilitySlot | null>(null);
+  const trainer = coaches.find((coach) => coach.slug === trainerSlug);
+  const knownTrainer = trainers.find((item) => item.id === trainerSlug);
+
+  useEffect(() => {
+    let active = true;
+
+    fetch(`/api/availability?trainerSlug=${encodeURIComponent(trainerSlug)}`, { cache: "no-store" })
+      .then(async (response) => {
+        const result = await response.json() as { error?: unknown; slots?: unknown };
+        if (!response.ok) {
+          throw new Error(typeof result.error === "string" ? result.error : "Could not load coach availability.");
+        }
+        if (!Array.isArray(result.slots)) {
+          throw new Error("The server returned an invalid availability list.");
+        }
+
+        const availableSlots = result.slots.flatMap((value): CoachAvailabilitySlot[] => {
+          if (typeof value !== "object" || value === null) return [];
+          const slot = value as Record<string, unknown>;
+          if (
+            typeof slot.id !== "string" ||
+            typeof slot.starts_at !== "string" ||
+            typeof slot.duration_minutes !== "number" ||
+            Number.isNaN(new Date(slot.starts_at).getTime())
+          ) {
+            return [];
+          }
+          return [{ id: slot.id, starts_at: slot.starts_at, duration_minutes: slot.duration_minutes }];
+        });
+
+        if (active) setSlots(availableSlots);
+      })
+      .catch((error: unknown) => {
+        if (active) setSlotsError(error instanceof Error ? error.message : "Could not load coach availability.");
+      })
+      .finally(() => {
+        if (active) setSlotsLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [slotRetry, trainerSlug]);
+
+  const slotsByDate = useMemo(() => {
+    const grouped: Record<string, CoachAvailabilitySlot[]> = {};
+    for (const slot of slots) {
+      const dateKey = indiaDateKey(slot.starts_at);
+      grouped[dateKey] = [...(grouped[dateKey] ?? []), slot];
+    }
+    return grouped;
+  }, [slots]);
+  const availableDates = Object.keys(slotsByDate).sort();
+  const activeDate = availableDates.includes(selectedDate) ? selectedDate : availableDates[0] ?? "";
+  const selectedDateSlots = slotsByDate[activeDate] ?? [];
+  const selectedSlot = selectedDateSlots.find((slot) => slot.id === selectedSlotId);
+
+  function retryAvailability() {
+    setSlotsLoading(true);
+    setSlotsError("");
+    setSlots([]);
+    setSelectedDate("");
+    setSelectedSlotId("");
+    setSlotRetry((current) => current + 1);
+  }
+
+  async function bookSession() {
+    if (!trainer || !selectedSlot) return;
+    setSubmitting(true);
+    setBookingError("");
+    setNeedsSignIn(false);
+
+    try {
+      const response = await fetch("/api/bookings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trainerSlug: trainer.slug, startsAt: selectedSlot.starts_at }),
+      });
+      const result = await response.json() as { error?: unknown };
+      if (response.status === 401) {
+        setNeedsSignIn(true);
+        throw new Error("Sign in to book this session.");
+      }
+      if (!response.ok) {
+        if (response.status === 409) {
+          setSlotsLoading(true);
+          setSlotsError("");
+          setSlots([]);
+          setSelectedSlotId("");
+          setSlotRetry((current) => current + 1);
+        }
+        throw new Error(typeof result.error === "string" ? result.error : "Could not book this session.");
+      }
+      setBookingConfirmation(selectedSlot);
+    } catch (error) {
+      setBookingError(error instanceof Error ? error.message : "Could not book this session.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="coach-booking-page">
+      <Link className="coach-directory-back" href="/trainers"><Icon name="arrow" size={14} /> ALL COACHES</Link>
+      {trainersLoading ? (
+        <p className="coach-search-message" role="status">Loading coach profile…</p>
+      ) : trainersError ? (
+        <div className="coach-search-message coach-search-error" role="alert"><span>{trainersError}</span><button type="button" className="text-link" onClick={onRetryTrainers}>TRY AGAIN <Icon name="arrow" size={13} /></button></div>
+      ) : !trainer ? (
+        <div className="coach-search-message" role="alert">This coach is no longer available. <Link className="text-link" href="/trainers">BROWSE COACHES <Icon name="arrow" size={13} /></Link></div>
+      ) : (
+        <>
+          <header className="coach-booking-heading">
+            <p className="eyebrow"><span /> YOUR NEXT GOOD SESSION</p>
+            <h1>BOOK YOUR<br /><em>TIME.</em></h1>
+            <p>Choose an open time with {trainer.name}. Only times the coach has made available can be booked.</p>
+          </header>
+          <div className="coach-booking-layout">
+            <section className="coach-booking-profile">
+              <div className={`coach-booking-portrait${knownTrainer ? " coach-booking-portrait-photo" : ""}`} style={knownTrainer ? { backgroundImage: `linear-gradient(180deg,transparent 35%,rgba(0,0,0,.7)),url("${knownTrainer.image}")` } : undefined}>
+                {!knownTrainer && <b>{trainer.name.split(" ").map((part) => part[0]).slice(0, 2).join("")}</b>}
+                <span className="verified-mark" title="Verified coach"><Icon name="check" size={12} /></span>
+              </div>
+              <p className="eyebrow"><span /> {trainer.specialty.toUpperCase()}</p>
+              <h2>{trainer.name}</h2>
+              <p className="coach-booking-title">{trainer.title}</p>
+              <p className="coach-booking-city"><Icon name="pin" size={14} />{trainer.city} · Online</p>
+              <div className="coach-booking-price"><span>50-MINUTE SESSION</span><b>₹{trainer.price.toLocaleString("en-IN")}</b></div>
+            </section>
+            <section className="coach-booking-panel" aria-labelledby="availability-heading">
+              <p className="eyebrow"><span /> YOUR CHOICE, THEIR OPENINGS</p>
+              <h2 id="availability-heading">Check availability</h2>
+              {bookingError && <p className="coach-booking-error" role="alert">{bookingError}{needsSignIn && <button className="text-link" type="button" onClick={onSignIn}>SIGN IN <Icon name="arrow" size={13} /></button>}</p>}
+              {bookingConfirmation ? (
+                <div className="coach-booking-success" role="status">
+                  <Icon name="check" size={22} />
+                  <p className="eyebrow"><span /> YOU’RE ON THE CALENDAR</p>
+                  <h3>Session booked.</h3>
+                  <p>{new Intl.DateTimeFormat("en-IN", { timeZone: "Asia/Kolkata", weekday: "long", day: "numeric", month: "long" }).format(new Date(bookingConfirmation.starts_at))} at {new Intl.DateTimeFormat("en-IN", { timeZone: "Asia/Kolkata", hour: "numeric", minute: "2-digit" }).format(new Date(bookingConfirmation.starts_at))} IST with {trainer.name}.</p>
+                  <Link className="button button-outline" href="/dashboard">BACK TO DASHBOARD <Icon name="arrow" size={14} /></Link>
+                </div>
+              ) : slotsLoading ? (
+                <p className="coach-search-message" role="status">Checking open times…</p>
+              ) : slotsError ? (
+                <div className="coach-search-message coach-search-error" role="alert"><span>{slotsError}</span><button type="button" className="text-link" onClick={retryAvailability}>TRY AGAIN <Icon name="arrow" size={13} /></button></div>
+              ) : availableDates.length === 0 ? (
+                <div className="coach-no-availability"><Icon name="calendar" size={22} /><b>No open times just yet.</b><p>This coach hasn’t added any bookable sessions in the next 60 days.</p><Link className="text-link" href="/trainers">FIND ANOTHER COACH <Icon name="arrow" size={13} /></Link></div>
+              ) : (
+                <>
+                  <p className="coach-booking-label">AVAILABLE DATES · INDIA TIME</p>
+                  <div className="coach-date-options">
+                    {availableDates.map((date) => (
+                      <button type="button" key={date} className={activeDate === date ? "coach-date-selected" : ""} aria-pressed={activeDate === date} onClick={() => { setSelectedDate(date); setSelectedSlotId(""); }}>
+                        <b>{new Intl.DateTimeFormat("en-IN", { timeZone: "Asia/Kolkata", day: "numeric" }).format(new Date(`${date}T12:00:00+05:30`))}</b>
+                        <span>{new Intl.DateTimeFormat("en-IN", { timeZone: "Asia/Kolkata", weekday: "short", month: "short" }).format(new Date(`${date}T12:00:00+05:30`))}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <p className="coach-booking-label">OPEN TIMES · 50 MINUTES</p>
+                  <div className="coach-time-options">
+                    {selectedDateSlots.map((slot) => (
+                      <button type="button" key={slot.id} className={selectedSlotId === slot.id ? "coach-time-selected" : ""} aria-pressed={selectedSlotId === slot.id} onClick={() => { setSelectedSlotId(slot.id); setBookingError(""); }}>
+                        {new Intl.DateTimeFormat("en-IN", { timeZone: "Asia/Kolkata", hour: "numeric", minute: "2-digit" }).format(new Date(slot.starts_at))}
+                      </button>
+                    ))}
+                  </div>
+                  <button className="button button-red button-full coach-booking-submit" type="button" disabled={!selectedSlot || submitting} onClick={bookSession}>
+                    {submitting ? "BOOKING…" : "BOOK THIS SESSION"} <Icon name="arrow" size={15} />
+                  </button>
+                  <small className="coach-booking-note">Your selected time is reserved only after booking is confirmed.</small>
+                </>
+              )}
+            </section>
+          </div>
+        </>
+      )}
+      <Footer />
     </div>
   );
 }
@@ -1866,18 +2236,58 @@ function TrainerClients() {
   return <div className="dashboard-content"><DashboardHeading kicker="THE PEOPLE YOU COACH" title={<>Your <em>clients.</em></>} subtitle="A little context makes every check-in more meaningful." action={<label className="search-field client-search"><Icon name="search" size={16} /><input placeholder="Search clients" /></label>} /><div className="client-table"><div className="client-table-head"><span>CLIENT</span><span>PROGRAM / GOAL</span><span>LAST ACTIVE</span><span>PROGRESS</span><span>STATUS</span></div>{["Riya Sharma", "Priya Nair", "Dev Kumar", "Sana Ali", "Meera Shah"].map((name, index) => <div className="client-table-row" key={name}><span className="client-name-cell"><Avatar trainer={trainers[index % trainers.length]} size="sm" /><b>{name}</b></span><span>{["The Strong Start · W4", "The Strong Start · W6", "Run Your First 10K · W2", "Move Better · W1", "The Strong Start · W3"][index]}</span><span>{["Today", "2 hours ago", "Yesterday", "May 16", "May 15"][index]}</span><span><i className="table-progress"><b style={{ width: `${[62, 83, 43, 24, 51][index]}%` }} /></i> {[62, 83, 43, 24, 51][index]}%</span><span className="activity-status">{index === 3 ? "NEEDS CHECK-IN" : "ON TRACK"}</span></div>)}</div></div>;
 }
 
-function AvailabilityPage({ day, setDay, notify }: { day: number; setDay: (day: number) => void; notify: (message: string) => void }) {
+function AvailabilityPage({ notify }: { notify: (message: string) => void }) {
   const [slots, setSlots] = useState(["10:00 AM", "12:30 PM", "5:30 PM"]);
+  const [selectedDate, setSelectedDate] = useState(() => {
+    const date = new Date();
+    date.setDate(date.getDate() + 1);
+    date.setHours(0, 0, 0, 0);
+    return date;
+  });
+  const [displayMonth, setDisplayMonth] = useState(() => {
+    const date = new Date();
+    date.setDate(date.getDate() + 1);
+    return new Date(date.getFullYear(), date.getMonth(), 1);
+  });
+  const [saving, setSaving] = useState(false);
+  const firstSelectableDate = new Date();
+  firstSelectableDate.setHours(0, 0, 0, 0);
+  firstSelectableDate.setDate(firstSelectableDate.getDate() + 1);
+  const lastSelectableDate = new Date();
+  lastSelectableDate.setHours(0, 0, 0, 0);
+  lastSelectableDate.setDate(lastSelectableDate.getDate() + 60);
+  const monthOffset = (new Date(displayMonth.getFullYear(), displayMonth.getMonth(), 1).getDay() + 6) % 7;
+  const monthDayCount = new Date(displayMonth.getFullYear(), displayMonth.getMonth() + 1, 0).getDate();
+  const calendarCellCount = Math.ceil((monthOffset + monthDayCount) / 7) * 7;
+  const calendarDates = Array.from({ length: calendarCellCount }, (_, index) => {
+    const day = index - monthOffset + 1;
+    return day > 0 && day <= monthDayCount ? new Date(displayMonth.getFullYear(), displayMonth.getMonth(), day) : null;
+  });
+  const canGoToPreviousMonth =
+    displayMonth.getFullYear() > firstSelectableDate.getFullYear() ||
+    (displayMonth.getFullYear() === firstSelectableDate.getFullYear() && displayMonth.getMonth() > firstSelectableDate.getMonth());
+  const canGoToNextMonth =
+    displayMonth.getFullYear() < lastSelectableDate.getFullYear() ||
+    (displayMonth.getFullYear() === lastSelectableDate.getFullYear() && displayMonth.getMonth() < lastSelectableDate.getMonth());
+
   async function saveAvailability() {
+    if (slots.length === 0) {
+      notify("Select at least one time before saving.");
+      return;
+    }
+
+    const now = Date.now();
+    const bookableSlots = slots.filter((slot) => isBookableSlot(selectedDate, slot, now));
+    if (bookableSlots.length === 0) {
+      notify("Choose a time 12 hours to 60 days ahead.");
+      return;
+    }
+
+    setSaving(true);
     try {
-      for (const slot of slots) {
-        const match = slot.match(/(\d+):(\d+)\s*(AM|PM)/i);
-        if (!match) continue;
-        let hours = Number(match[1]);
-        const minutes = Number(match[2]);
-        if (match[3].toUpperCase() === "PM" && hours !== 12) hours += 12;
-        if (match[3].toUpperCase() === "AM" && hours === 12) hours = 0;
-        const startsAt = new Date(2026, 10, day, hours, minutes);
+      for (const slot of bookableSlots) {
+        const startsAt = indiaSlotStartAt(selectedDate, slot);
+        if (!startsAt) continue;
         const response = await fetch("/api/availability", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -1886,13 +2296,72 @@ function AvailabilityPage({ day, setDay, notify }: { day: number; setDay: (day: 
         const result = await response.json() as { error?: string };
         if (!response.ok) throw new Error(result.error ?? "Could not save availability.");
       }
-      notify("Availability saved");
+      notify(bookableSlots.length === slots.length
+        ? "Availability saved"
+        : `Saved ${bookableSlots.length} times. Some selected times were outside the booking window.`);
     } catch (error) {
       notify(error instanceof Error ? error.message : "Could not save availability.");
+    } finally {
+      setSaving(false);
     }
   }
 
-  return <div className="dashboard-content"><DashboardHeading kicker="MAKE SPACE FOR YOUR WORK" title={<>Your <em>availability.</em></>} subtitle="Choose when clients can book time with you. Changes stay in your control." action={<button className="button button-red" onClick={saveAvailability}>SAVE AVAILABILITY <Icon name="check" size={15} /></button>} /><div className="availability-layout"><section className="dashboard-panel availability-calendar"><div className="picker-heading"><button onClick={() => notify("Previous month")}>‹</button><b>NOVEMBER 2026</b><button onClick={() => notify("Next month")}>›</button></div><div className="availability-grid">{["M", "T", "W", "T", "F", "S", "S"].map((label, index) => <span className="date-day" key={`${label}${index}`}>{label}</span>)}{Array.from({ length: 35 }, (_, index) => index < 6 ? null : <button className={`${day === index - 5 ? "date-selected" : ""} ${index % 5 === 0 ? "calendar-has-slot" : ""}`} key={index} onClick={() => setDay(index - 5)}>{index - 5}</button>)}</div><div className="calendar-legend"><span><i /> Available hours</span><span><i /> Session booked</span></div></section><section className="dashboard-panel slot-editor"><p className="eyebrow"><span /> {day} NOVEMBER</p><h2>Make room<br />for a good session.</h2><p>50-minute online coaching · IST</p><div className="availability-slots">{["9:00 AM", "10:00 AM", "12:30 PM", "3:00 PM", "5:30 PM", "7:00 PM"].map((slot) => <button className={slots.includes(slot) ? "slot-selected" : ""} key={slot} onClick={() => setSlots((current) => current.includes(slot) ? current.filter((item) => item !== slot) : [...current, slot])}>{slots.includes(slot) && <Icon name="check" size={13} />}{slot}</button>)}</div><button className="add-slot" onClick={() => notify("Custom slot picker is a UI preview only")}><Icon name="plus" size={15} /> ADD A CUSTOM SLOT</button><div className="booking-window-info"><Icon name="clock" size={16} /><span>Clients can book 12 hours ahead<br />and up to 60 days in advance.</span></div></section></div></div>;
+  return (
+    <div className="dashboard-content">
+      <DashboardHeading
+        kicker="MAKE SPACE FOR YOUR WORK"
+        title={<>Your <em>availability.</em></>}
+        subtitle="Choose when clients can book time with you. Changes stay in your control."
+        action={<button className="button button-red" disabled={saving} onClick={saveAvailability}>{saving ? "SAVING…" : "SAVE AVAILABILITY"} <Icon name="check" size={15} /></button>}
+      />
+      <div className="availability-layout">
+        <section className="dashboard-panel availability-calendar">
+          <div className="picker-heading">
+            <button type="button" aria-label="Previous month" disabled={!canGoToPreviousMonth} onClick={() => setDisplayMonth((month) => new Date(month.getFullYear(), month.getMonth() - 1, 1))}>‹</button>
+            <b>{displayMonth.toLocaleDateString("en-US", { month: "long", year: "numeric" }).toUpperCase()}</b>
+            <button type="button" aria-label="Next month" disabled={!canGoToNextMonth} onClick={() => setDisplayMonth((month) => new Date(month.getFullYear(), month.getMonth() + 1, 1))}>›</button>
+          </div>
+          <div className="availability-grid">
+            {["M", "T", "W", "T", "F", "S", "S"].map((label, index) => <span className="date-day" key={`${label}${index}`}>{label}</span>)}
+            {calendarDates.map((date, index) => date ? (
+              <button
+                type="button"
+                key={`${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`}
+                disabled={date < firstSelectableDate || date > lastSelectableDate}
+                className={selectedDate.getTime() === date.getTime() ? "date-selected" : ""}
+                aria-pressed={selectedDate.getTime() === date.getTime()}
+                aria-label={date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
+                onClick={() => setSelectedDate(date)}
+              >
+                {date.getDate()}
+              </button>
+            ) : <span className="calendar-empty" aria-hidden="true" key={`empty-${index}`} />)}
+          </div>
+          <div className="calendar-legend"><span>Choose a day within the next 60 days.</span></div>
+        </section>
+        <section className="dashboard-panel slot-editor">
+          <p className="eyebrow"><span /> {selectedDate.toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "long" }).toUpperCase()}</p>
+          <h2>Make room<br />for a good session.</h2>
+          <p>50-minute online coaching · IST</p>
+          <div className="availability-slots">
+            {["9:00 AM", "10:00 AM", "12:30 PM", "3:00 PM", "5:30 PM", "7:00 PM"].map((slot) => (
+              <button
+                type="button"
+                className={slots.includes(slot) ? "slot-selected" : ""}
+                key={slot}
+                aria-pressed={slots.includes(slot)}
+                disabled={!slots.includes(slot) && !isBookableSlot(selectedDate, slot)}
+                onClick={() => setSlots((current) => current.includes(slot) ? current.filter((item) => item !== slot) : [...current, slot])}
+              >
+                {slots.includes(slot) && <Icon name="check" size={13} />}{slot}
+              </button>
+            ))}
+          </div>
+          <div className="booking-window-info"><Icon name="clock" size={16} /><span>Clients can book 12 hours ahead<br />and up to 60 days in advance.</span></div>
+        </section>
+      </div>
+    </div>
+  );
 }
 
 function EarningsPage() {

@@ -2,7 +2,31 @@ import { auth } from "@/lib/auth/server";
 import { sql } from "@/lib/db";
 import { randomUUID } from "node:crypto";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const url = new URL(request.url);
+  const trainerSlug = url.searchParams.get("trainerSlug");
+
+  if (trainerSlug !== null) {
+    if (!trainerSlug.trim()) {
+      return Response.json({ error: "Provide a trainer slug." }, { status: 400 });
+    }
+
+    const slots = await sql`
+      SELECT s.id, s.starts_at, s.duration_minutes
+      FROM public.availability_slots s
+      JOIN public.trainer_profiles tp ON tp.id = s.trainer_id
+      WHERE tp.slug = ${trainerSlug}
+        AND tp.approved = true
+        AND tp.suspended = false
+        AND s.is_active = true
+        AND s.starts_at >= NOW() + INTERVAL '12 hours'
+        AND s.starts_at <= NOW() + INTERVAL '60 days'
+      ORDER BY s.starts_at ASC
+    `;
+
+    return Response.json({ slots });
+  }
+
   const { data: session } = await auth.getSession();
   if (!session?.user) {
     return Response.json({ error: "Unauthorized." }, { status: 401 });
@@ -38,8 +62,13 @@ export async function PUT(request: Request) {
   }
 
   const startsAt = new Date(body.startsAt);
-  if (Number.isNaN(startsAt.getTime()) || startsAt.getTime() < Date.now()) {
-    return Response.json({ error: "Availability must be in the future." }, { status: 400 });
+  const now = Date.now();
+  if (
+    Number.isNaN(startsAt.getTime()) ||
+    startsAt.getTime() < now + 12 * 60 * 60 * 1000 ||
+    startsAt.getTime() > now + 60 * 24 * 60 * 60 * 1000
+  ) {
+    return Response.json({ error: "Availability must be 12 hours to 60 days ahead." }, { status: 400 });
   }
 
   const [profile] = await sql`

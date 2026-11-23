@@ -47,7 +47,20 @@ export async function POST(request: Request) {
     return Response.json({ error: "Choose a valid account type." }, { status: 400 });
   }
 
-  const profile = await getOrCreateProfile(session.user, body.role);
+  const displayName = "displayName" in body ? body.displayName : undefined;
+  if (displayName !== undefined && (
+    typeof displayName !== "string" ||
+    displayName.trim().length < 1 ||
+    displayName.trim().length > 100
+  )) {
+    return Response.json({ error: "Provide a display name between 1 and 100 characters." }, { status: 400 });
+  }
+
+  const profile = await getOrCreateProfile(
+    session.user,
+    body.role,
+    typeof displayName === "string" ? displayName : undefined,
+  );
   const trainerSetupRequired = profile.role === "trainer"
     ? await needsTrainerSetup(session.user.id)
     : false;
